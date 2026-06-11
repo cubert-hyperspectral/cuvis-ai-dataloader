@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuvis-ai-dataloader"
+dynamic = ["version"]
+description = "Pluggable hyperspectral DataModules (cu3s + COCO, TIFF + paired-PNG) for the Cuvis.AI ecosystem"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+authors = [{ name = "Cubert GmbH", email = "cuvis.ai@cubert-gmbh.com" }]
+dependencies = [
+    "cuvis-ai-core>=0.7.1",
+    "cuvis-ai-schemas>=0.5.1",
+    "numpy",
+    "torch",
+    "pytorch-lightning",
+    "pillow>=12.2.0",
+    "loguru>=0.7.3",
+]
+
+[project.optional-dependencies]
+# Per-format heavy deps. The orchestrator composer installs the union of extras
+# a run actually activates, so a tiff_paired child env never pulls `cuvis`.
+cu3s = ["cuvis>=3.5.0", "cuvis-il<3.5.3; sys_platform == 'win32'"]
+coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1"]
+tiff = ["tifffile>=2024.5.0"]
+all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
+dev = ["cuvis-ai-dataloader[all]", "pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.14.13"]
+
+[tool.setuptools.packages.find]
+include = ["cuvis_ai_dataloader*"]
+
+[tool.setuptools_scm]
+
+[tool.uv.sources]
+cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
+cuvis-ai-schemas = { path = "../../cuvis-ai-schemas/cuvis-ai-schemas", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "gpu: marks tests that require a GPU",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
