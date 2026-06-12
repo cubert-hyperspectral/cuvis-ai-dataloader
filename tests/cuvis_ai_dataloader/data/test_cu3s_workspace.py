@@ -165,3 +165,23 @@ def test_manifest_declares_cu3s_workspace():
     text = manifest.read_text(encoding="utf-8")
     assert "data_module_name: cu3s_workspace" in text
     assert "datamodule_cu3s_workspace.WorkspaceCu3sDataModule" in text
+
+
+def test_resolve_splits_classmethod_hook(tmp_path, mock_cuvis_sdk):
+    """The registry hook used by core's ResolveSplits servicer (write=False path)."""
+    root, members = _make_workspace(tmp_path, with_splits=False)
+    payload, written = WorkspaceCu3sDataModule.resolve_splits(
+        {"workspace_path": str(root), "strategy": "random", "seed": 1, "write": False}
+    )
+    assert written is None
+    assert set(payload["files"]) == {m["path"] for m in members}
+    for lists in payload["files"].values():
+        assert set(lists) == {"train", "val", "test", "predict"}
+
+    payload2, written2 = WorkspaceCu3sDataModule.resolve_splits(
+        {"workspace_path": str(root), "strategy": "stratified", "seed": 1}
+    )
+    assert written2 and written2.endswith("splits.json")
+    dm = WorkspaceCu3sDataModule(workspace_path=str(root))  # consumes the written file
+    dm.setup(stage="test")
+    assert len(dm.test_dataloader().dataset) > 0

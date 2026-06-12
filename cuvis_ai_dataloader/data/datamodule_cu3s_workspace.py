@@ -62,6 +62,36 @@ class WorkspaceCu3sDataModule(BaseHyperspectralDataModule):
         self._processing_mode = processing_mode or self._workspace.default_processing_mode
         self._rows_by_stage = self._build_rows()
 
+    @classmethod
+    def resolve_splits(cls, config: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        """Registry hook for the ``ResolveSplits`` RPC.
+
+        ``config`` is a ``SplitsResolveConfig``-shaped mapping. Returns the
+        resolved splits payload (the ``splits.json`` content) plus the path it
+        was written to (``None`` when ``write=False``). Core dispatches here via
+        ``registry.data_modules[config["data_module"]]`` so the strategy
+        semantics stay plugin-owned.
+        """
+        from .split_resolver import resolve_splits as _resolve
+
+        workspace = Workspace.load(config["workspace_path"])
+        result = _resolve(
+            workspace,
+            strategy=config.get("strategy", "random"),
+            train_ratio=config.get("train_ratio", 0.70),
+            val_ratio=config.get("val_ratio", 0.15),
+            seed=config.get("seed"),
+            selected_files=config.get("selected_files"),
+            write=config.get("write", True),
+        )
+        payload = {
+            "version": result.version,
+            "coco_hash_per_file": result.coco_hash_per_file,
+            "files": result.files,
+        }
+        written = str(workspace.root / "splits.json") if config.get("write", True) else None
+        return payload, written
+
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
         from pathlib import Path
