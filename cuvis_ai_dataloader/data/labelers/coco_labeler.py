@@ -4,7 +4,7 @@ from collections.abc import Iterable, Iterator
 from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import torch
@@ -326,12 +326,32 @@ def create_mask(
     return category_mask
 
 
+def _is_effective_annotation(ann: Annotation) -> bool:
+    """True iff ``create_mask`` would write any pixels for this annotation.
+
+    Exported datasets may carry placeholder annotations on every frame (``area``
+    0.0, empty RLE ``counts``); those rasterize to nothing and must not count as
+    anomaly evidence. Mirrors the skip logic in :func:`create_mask`.
+    """
+    segs = ann.segmentation
+    if isinstance(segs, list) and any(
+        isinstance(seg, (list, tuple)) and len(seg) >= 6 for seg in segs
+    ):
+        return True
+    mask = ann.mask
+    counts = mask.get("counts") if isinstance(mask, dict) else None
+    return counts is not None and len(counts) > 0
+
+
 class CocoLabeler:
     """Caches one parsed COCO file and rasterizes per-image category masks.
 
     Used by the cu3s DataModules: one labeler per unique annotation JSON. Keys on
     the COCO ``image_id`` (which equals the cu3s measurement index).
     """
+
+    #: Category ids that do NOT mark a frame anomalous (0 = background/unlabeled).
+    NORMAL_CATEGORY_IDS: ClassVar[frozenset[int]] = frozenset({0})
 
     def __init__(self, annotation_json_path: str | Path) -> None:
         self.annotation_json_path = str(annotation_json_path)
@@ -341,6 +361,27 @@ class CocoLabeler:
     @property
     def image_ids(self) -> list[int]:
         return self._coco.image_ids
+
+    def anomaly_category_ids(self, image_id: int) -> frozenset[int]:
+        """Non-normal category ids effectively annotated on this frame.
+
+        Empty set = the frame is normal. Only annotations that would rasterize
+        pixels count (see :func:`_is_effective_annotation`), so placeholder
+        entries don't poison anomaly-detection splits where train must contain
+        only normal frames.
+        """
+        if image_id not in self._coco.image_ids:
+            return frozenset()
+        return frozenset(
+            int(ann.category_id)
+            for ann in self._coco.annotations.where(image_id=image_id)
+            if int(ann.category_id) not in self.NORMAL_CATEGORY_IDS
+            and _is_effective_annotation(ann)
+        )
+
+    def is_anomalous(self, image_id: int) -> bool:
+        """True iff the frame carries any effective non-normal annotation."""
+        return bool(self.anomaly_category_ids(image_id))
 
     def _canvas_size(self, image_id: int, fallback_hw: tuple[int, int]) -> tuple[int, int]:
         """COCO image (height, width) for ``image_id``; falls back to the cube's."""
