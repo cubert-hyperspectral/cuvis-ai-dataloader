@@ -18,6 +18,14 @@ def _make_cu3s(tmp_path, name="x.cu3s"):
     return str(path)
 
 
+def _make_cu3s_folder(tmp_path, n=4):
+    folder = tmp_path / "session_dir"
+    folder.mkdir()
+    for i in range(n):
+        (folder / f"scan_{i:02d}.cu3s").write_bytes(b"")
+    return folder
+
+
 def test_data_module_name_and_subclass():
     assert Cu3sDataModule.DATA_MODULE_NAME == "cu3s"
     assert issubclass(Cu3sDataModule, BaseHyperspectralDataModule)
@@ -117,3 +125,76 @@ def test_single_cu3s_dataset_shim(mock_cuvis_sdk, tmp_path):
     item = ds[0]
     assert item["mesu_index"] == 0
     assert "cube" in item and "wavelengths" in item
+
+
+def test_setup_fit_expands_range_splits(mock_cuvis_sdk, tmp_path):
+    dm = Cu3sDataModule(
+        cu3s_file_path=_make_cu3s(tmp_path),
+        splits=DataSplitConfig(train_ids=["0-3"], val_ids=[5, 6]),
+        batch_size=1,
+    )
+    dm.setup(stage="fit")
+    assert len(dm._train_ds) == 4  # "0-3" -> [0, 1, 2, 3]
+    assert len(dm._val_ds) == 2
+
+
+def test_measurement_indices_accepts_range(mock_cuvis_sdk, tmp_path):
+    dm = Cu3sDataModule(
+        cu3s_file_path=_make_cu3s(tmp_path),
+        measurement_indices="0-4",  # inclusive range string
+        batch_size=1,
+    )
+    dm.setup(stage="predict")
+    assert len(dm._predict_ds) == 5  # measurements 0..4
+
+
+def test_folder_source_predict_iterates_all_files(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=4)
+    dm = Cu3sDataModule(data_dir=str(folder), batch_size=1)
+    dm.setup(stage="predict")
+    assert len(dm._predict_ds) == 4
+    sample = dm._predict_ds[0]
+    assert sample["stem"] == "scan_00"
+    assert "cube" in sample and "wavelengths" in sample
+
+
+def test_folder_source_splits_by_position_and_stem(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=5)
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        splits=DataSplitConfig(train_ids=[0, "scan_02"], val_ids=["1-2"]),
+        batch_size=1,
+    )
+    dm.setup(stage="fit")
+    assert len(dm._train_ds) == 2  # position 0 + stem scan_02
+    assert len(dm._val_ds) == 2  # "1-2" -> positions 1, 2
+
+
+def test_folder_source_glob_filters_extensions(mock_cuvis_sdk, tmp_path):
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    (folder / "a.cu3s").write_bytes(b"")
+    (folder / "b.cu3s").write_bytes(b"")
+    (folder / "note.txt").write_text("ignore me")
+    dm = Cu3sDataModule(data_dir=str(folder), batch_size=1)
+    dm.setup(stage="predict")
+    assert len(dm._predict_ds) == 2
+
+
+def test_folder_validate_params_accepts_dir_and_rejects_empty(tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=2)
+    Cu3sDataModule.validate_params({"data_dir": str(folder)})  # no raise
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="holds no"):
+        Cu3sDataModule.validate_params({"data_dir": str(empty)})
+
+
+def test_folder_unknown_selector_raises(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=2)
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        splits=DataSplitConfig(train_ids=["does_not_exist"]),
+    )
+    with pytest.raises(ValueError, match="neither an int position"):
+        dm.setup(stage="fit")

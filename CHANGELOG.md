@@ -20,6 +20,13 @@
     image_id`), per-day COCO JSONs, module-owned splits (leaves
     `DataConfig.splits = None` and overrides `build_stage_dataset`); one cached
     `CocoLabeler` per unique annotation JSON.
+- **Richer split selectors.** `Cu3sDataModule` gains a **folder source**: a `data_dir` (directory)
+  without `dataset_name` globs `*.{glob}` (default `cu3s`) into one ordered universe, and split
+  selectors index into it by int position or filename stem. `measurement_indices` accepts inclusive
+  range strings (`"0-100"`, `"0-10:2"`) alongside the comma list. `MultiCu3sDataModule` accepts a
+  ranged `image_id` cell (`0-5`) that fans a CSV row out into one sample per measurement (reading
+  measurement *m*, COCO `image_id` *m*); a scalar `image_id` keeps the legacy single-frame `read(0)`
+  behavior. Inclusive range strings in `DataConfig.splits` id-lists are expanded by the core base.
 - Internal `data/readers` (`Cu3sCubeReader`, `TiffCubeReader`) and `data/labelers`
   (`CocoLabeler` + `create_mask`, `PairedPngLabeler`) reused across modules; not a
   plugin contract.

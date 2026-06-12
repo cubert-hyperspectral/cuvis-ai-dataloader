@@ -87,10 +87,20 @@ def parse_float_list(s, *, key: str) -> list[float]:
 
 
 def parse_int_list(s, *, key: str) -> list[int]:
-    """Comma-ints (or an existing list) -> list[int]."""
-    if isinstance(s, (list, tuple)):
-        return [int(x) for x in s]
-    return [int(x.strip()) for x in str(s).split(",") if x.strip()]
+    """Comma list of ints and inclusive ``start-stop[:step]`` ranges -> list[int].
+
+    Accepts an existing list/tuple, or a string like ``"0,2,4"``, ``"0-100"``, or
+    ``"0-10:2, 20"``. Range tokens expand via the shared core helper, so
+    ``measurement_indices`` accepts the same range syntax as split id-lists.
+    """
+    from cuvis_ai_core.utils.general import expand_range_selectors
+
+    tokens = (
+        list(s)
+        if isinstance(s, (list, tuple))
+        else [t.strip() for t in str(s).split(",") if t.strip()]
+    )
+    return [int(x) for x in expand_range_selectors(tokens)]
 
 
 def parse_str_list(s, *, key: str) -> list[str]:

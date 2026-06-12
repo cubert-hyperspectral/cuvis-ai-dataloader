@@ -79,3 +79,41 @@ def test_labeler_reuse_across_rows(mock_cuvis_sdk, tmp_path):
     _ = ds[1]
     # Both test rows share day1.json -> exactly one CocoLabeler cached.
     assert len(ds._labelers) == 1
+
+
+def _write_ranged_dataset(tmp_path):
+    (tmp_path / "clip.cu3s").write_bytes(b"")
+    (tmp_path / "day1.json").write_text("{}")
+    csv_path = tmp_path / "splits.csv"
+    csv_path.write_text(
+        "split,cu3s_path,annotation_json,image_id\n"
+        "train,clip.cu3s,day1.json,0-2\n"  # per-file frame range -> 3 samples
+        "test,clip.cu3s,,5\n"  # scalar -> legacy single read(0)
+    )
+    return csv_path
+
+
+def test_ranged_image_id_fans_out_rows(mock_cuvis_sdk, tmp_path):
+    csv_path = _write_ranged_dataset(tmp_path)
+    dm = MultiCu3sDataModule(splits_csv=str(csv_path))
+    train_rows = [r for r in dm._rows if r["split"] == "train"]
+    # "0-2" -> measurements 0,1,2; read_index tracks the measurement, image_id too.
+    assert [r["read_index"] for r in train_rows] == [0, 1, 2]
+    assert [r["image_id"] for r in train_rows] == [0, 1, 2]
+    test_rows = [r for r in dm._rows if r["split"] == "test"]
+    assert len(test_rows) == 1
+    assert test_rows[0]["read_index"] == 0  # scalar keeps legacy read(0)
+    assert test_rows[0]["image_id"] == 5
+    # frame_id is unique + contiguous across the fan-out.
+    assert [r["frame_id"] for r in dm._rows] == [0, 1, 2, 3]
+
+
+def test_ranged_image_id_reads_the_right_measurement(mock_cuvis_sdk, tmp_path):
+    csv_path = _write_ranged_dataset(tmp_path)
+    dm = MultiCu3sDataModule(splits_csv=str(csv_path))
+    dm.setup(stage="fit")
+    assert len(dm._train_ds) == 3
+    session = mock_cuvis_sdk["session"]
+    session.get_measurement.reset_mock()
+    _ = dm._train_ds[2]  # third train sample -> measurement 2
+    session.get_measurement.assert_any_call(2)

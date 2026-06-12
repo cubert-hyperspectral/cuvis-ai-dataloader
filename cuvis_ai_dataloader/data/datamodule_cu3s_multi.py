@@ -16,6 +16,7 @@ from typing import Any, ClassVar
 from torch.utils.data import Dataset
 
 from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
+from cuvis_ai_core.utils.general import expand_range_selectors
 
 from .readers.cu3s_reader import Cu3sCubeReader
 
@@ -43,7 +44,7 @@ class _MultiCu3sDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         rec = self._rows[idx]
         reader = Cu3sCubeReader(rec["cu3s_path"], processing_mode=self._processing_mode)
-        item = reader.read(0)
+        item = reader.read(rec["read_index"])
         item.update(
             {
                 "mesu_index": int(rec["image_id"]),
@@ -112,6 +113,7 @@ class MultiCu3sDataModule(BaseHyperspectralDataModule):
 
     def _parse_csv(self, csv_path: Path) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
+        frame_counter = 0
         with csv_path.open(encoding="utf-8") as f:
             reader = csv.DictReader(f)
             missing = [c for c in _REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
@@ -120,20 +122,33 @@ class MultiCu3sDataModule(BaseHyperspectralDataModule):
                     f"{csv_path}: missing required column(s) {missing}. "
                     f"Required: {list(_REQUIRED_COLUMNS)}. Extra columns are allowed and ignored."
                 )
-            for row_idx, row in enumerate(reader):
-                out.append(
-                    {
-                        "frame_id": row_idx,  # stable global identity across days
-                        "split": row["split"],
-                        "cu3s_path": str(self._resolve(row["cu3s_path"])),
-                        "annotation_json": (
-                            str(self._resolve(row["annotation_json"]))
-                            if row["annotation_json"]
-                            else ""
-                        ),
-                        "image_id": int(row["image_id"]),
-                    }
+            for row in reader:
+                cu3s_path = str(self._resolve(row["cu3s_path"]))
+                annotation_json = (
+                    str(self._resolve(row["annotation_json"])) if row["annotation_json"] else ""
                 )
+                # A ranged image_id ("0-5") fans the row out into one sample per
+                # measurement m (read measurement m, COCO image_id m); a scalar keeps
+                # the legacy single-frame-per-file behavior (read measurement 0).
+                cell = str(row["image_id"]).strip()
+                if "-" in cell:
+                    measurements = [int(x) for x in expand_range_selectors([cell])]
+                    ranged = True
+                else:
+                    measurements = [int(cell)]
+                    ranged = False
+                for m in measurements:
+                    out.append(
+                        {
+                            "frame_id": frame_counter,  # stable global identity
+                            "split": row["split"],
+                            "cu3s_path": cu3s_path,
+                            "annotation_json": annotation_json,
+                            "image_id": m if ranged else int(cell),
+                            "read_index": m if ranged else 0,
+                        }
+                    )
+                    frame_counter += 1
         if not out:
             raise ValueError(f"{csv_path}: no rows.")
         return out
