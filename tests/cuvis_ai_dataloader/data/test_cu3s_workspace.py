@@ -58,9 +58,11 @@ def test_stage_datasets_match_splits(tmp_path, mock_cuvis_sdk):
     assert len(dm.test_dataloader().dataset) == 2
     item = dm.train_dataloader().dataset[0]
     assert "cube" in item and "frame_id" in item and "mask" in item  # member 0 has a sibling
-    # member 1 has no sibling -> no mask key for its rows
+    # member 1 has no sibling -> still gets a zero mask (no-COCO zero-mask fix),
+    # so val/test metric nodes that consume `targets` always have a tensor.
     last = dm.train_dataloader().dataset[2]
-    assert last["annotation_json"] == "" and "mask" not in last
+    assert last["annotation_json"] == "" and "mask" in last
+    assert int(last["mask"].sum()) == 0
 
 
 def test_processing_mode_defaults_from_workspace(tmp_path, mock_cuvis_sdk):

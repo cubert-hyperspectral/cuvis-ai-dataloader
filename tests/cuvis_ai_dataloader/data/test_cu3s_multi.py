@@ -117,3 +117,25 @@ def test_ranged_image_id_reads_the_right_measurement(mock_cuvis_sdk, tmp_path):
     session.get_measurement.reset_mock()
     _ = dm._train_ds[2]  # third train sample -> measurement 2
     session.get_measurement.assert_any_call(2)
+
+
+def test_no_coco_sibling_yields_zero_mask(mock_cuvis_sdk, tmp_path):
+    # A row with an empty annotation_json has no COCO sibling. The frame must
+    # still carry a 'mask' key (zeros) so val/test metric nodes that consume
+    # 'targets' get a tensor of the right shape, matching CocoLabeler's
+    # unannotated path. Regression for the no-COCO zero-mask gap (ALL-5766).
+    import numpy as np
+
+    csv_path = _write_ranged_dataset(tmp_path)
+    dm = MultiCu3sDataModule(splits_csv=str(csv_path))
+    dm.setup(stage='test')  # the 'test' split row is clip.cu3s with no annotation
+    ds = dm._test_ds
+    assert ds._rows[0]['annotation_json'] == ''  # the no-sibling row
+    item = ds[0]
+    assert 'mask' in item
+    h, w = mock_cuvis_sdk['hw']
+    assert item['mask'].shape == (h, w)
+    assert item['mask'].dtype == np.int32
+    assert int(item['mask'].sum()) == 0
+    # No COCO file was opened for this frame.
+    assert len(ds._labelers) == 0

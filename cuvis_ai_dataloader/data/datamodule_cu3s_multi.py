@@ -55,6 +55,15 @@ class _MultiCu3sDataset(Dataset):
         ann = rec["annotation_json"]
         if ann:
             item.update(self._labeler_for(ann).load_for(int(rec["image_id"]), item))
+        else:
+            # No COCO sibling => an all-normal frame (no anomaly evidence). Emit a
+            # zero category mask so val/test metric nodes that require `targets`
+            # still receive a tensor of the right shape. Mirrors the unannotated
+            # path of CocoLabeler.load_for (int32 [H, W], 0 = background).
+            import numpy as np
+
+            cube = item["cube"]
+            item["mask"] = np.zeros((int(cube.shape[0]), int(cube.shape[1])), dtype=np.int32)
         return item
 
 
