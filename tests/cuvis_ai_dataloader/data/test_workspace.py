@@ -97,6 +97,33 @@ def test_dedupe_by_canonical_path(tmp_path):
     assert ws.duplicate_paths() == [str(cu3s), str(spelled_differently)]
 
 
+def test_members_resolve_across_multiple_locations(tmp_path):
+    # Scenario C: members live under unrelated absolute locations (two distinct
+    # "roots" + a standalone path). Location is irrelevant -- all resolve, none
+    # are reported missing, and dedupe still keys on the canonical path.
+    loc_a = _touch(tmp_path / "loc_a" / "sessionX" / "Auto_000.cu3s")
+    loc_b = _touch(tmp_path / "elsewhere" / "loc_b" / "sessionY" / "Auto_000.cu3s")
+    standalone = _touch(tmp_path / "misc" / "Auto_001.cu3s")
+    root = _write_workspace(
+        tmp_path / "ws",
+        measurements=[
+            {"path": str(loc_a), "frames": 36},
+            {"path": str(loc_b), "frames": 40},
+            {"path": str(standalone), "frames": 2},
+        ],
+        scan_roots=[str(tmp_path / "loc_a"), str(tmp_path / "elsewhere" / "loc_b")],
+    )
+    ws = Workspace.load(root)
+    assert len(ws.member_measurements()) == 3
+    assert ws.missing_paths() == []
+    assert set(ws.member_paths()) == {str(loc_a), str(loc_b), str(standalone)}
+    assert ws.frames_by_path() == {
+        canonical(loc_a): 36,
+        canonical(loc_b): 40,
+        canonical(standalone): 2,
+    }
+
+
 def test_missing_paths_are_named(tmp_path):
     present = _touch(tmp_path / "data" / "ok" / "Auto_000.cu3s")
     gone = tmp_path / "data" / "gone" / "Auto_000.cu3s"
