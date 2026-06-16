@@ -28,6 +28,26 @@ class PairedPngLabeler:
         self.label_output_key = label_output_key
         self.label_mode = label_mode
 
+    def has_label(self, stem: str) -> bool:
+        """True if a paired ``<stem>.png`` exists (i.e. the sample is annotated)."""
+        return (self.labels_dir / f"{stem}.png").exists()
+
+    def categories_for(self, stem: str) -> list[int]:
+        """Category ids for ``stem`` from the PNG mask (empty -> unannotated / normal).
+
+        ``label_map`` mode returns the distinct non-zero label values; ``rgb`` mode has no
+        per-value labels, so a present PNG is reported as the single category ``1``.
+        """
+        png_path = self.labels_dir / f"{stem}.png"
+        if not png_path.exists():
+            return []
+        if self.label_mode == "label_map":
+            from PIL import Image
+
+            arr = np.asarray(Image.open(png_path).convert("L"), dtype=np.uint8)
+            return sorted({int(v) for v in np.unique(arr) if int(v) != 0})
+        return [1]
+
     def load_for(self, stem: str, cube_hw: tuple[int, int]) -> dict:
         from PIL import Image
 

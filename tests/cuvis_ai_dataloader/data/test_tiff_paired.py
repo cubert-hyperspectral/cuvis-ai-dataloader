@@ -6,17 +6,18 @@ import numpy as np
 import pytest
 import torch
 
-from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_dataloader.data.datamodule_tiff_paired import TiffPairedDataModule
 from cuvis_ai_dataloader.data.readers.tiff_reader import (
     TiffCubeReader,
     _parse_wavelengths_from_gdal,
 )
+from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
 
 
 def test_data_module_name_and_subclass():
     assert TiffPairedDataModule.DATA_MODULE_NAME == "tiff_paired"
-    assert issubclass(TiffPairedDataModule, BaseHyperspectralDataModule)
+    assert issubclass(TiffPairedDataModule, BaseCuvisAIDataModule)
 
 
 def test_parse_wavelengths_from_gdal():
@@ -64,25 +65,29 @@ def test_stem_selectors(tiff_dataset_dir):
     dm = TiffPairedDataModule(
         images_dir=str(images_dir),
         wavelengths=",".join(str(w) for w in wavelengths),
+        splits=DataSplitConfig(predict=[Selector(kind=SelectorKind.STEMS, stems=["scrap_02"])]),
     )
-    ds = dm.build_dataset(["scrap_02"])
-    assert len(ds) == 1
-    assert ds[0]["stem"] == "scrap_02"
+    dm.setup(stage="predict")
+    assert len(dm._predict_ds) == 1
+    assert dm._predict_ds[0]["stem"] == "scrap_02"
 
 
-def test_missing_png_raises(tiff_dataset_dir, tmp_path):
+def test_missing_png_is_unannotated_not_an_error(tiff_dataset_dir, tmp_path):
+    # A TIFF with no paired PNG is a valid unannotated sample (AD-aware: normals carry no
+    # label), not a crash. enumerate() leaves its annotation None and __getitem__ skips it.
     images_dir, _labels_dir, wavelengths = tiff_dataset_dir
     empty_labels = tmp_path / "empty_labels"
     empty_labels.mkdir()
-    # validate would catch an empty dir; bypass it and hit the per-item error
+    (empty_labels / "placeholder.png").write_bytes(b"")  # satisfy validate_params (dir has a PNG)
     dm = TiffPairedDataModule(
         images_dir=str(images_dir),
         labels_dir=str(empty_labels),
         wavelengths=",".join(str(w) for w in wavelengths),
     )
     dm.setup(stage="predict")
-    with pytest.raises(FileNotFoundError, match="scrap_01"):
-        _ = dm._predict_ds[0]
+    sample = dm._predict_ds[0]  # no matching PNG -> no label key, no error
+    assert "label_rgb" not in sample
+    assert "cube" in sample
 
 
 def test_label_map_variant(tiff_dataset_dir):

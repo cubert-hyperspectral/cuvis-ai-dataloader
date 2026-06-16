@@ -19,6 +19,9 @@ dependencies = [
     "loguru>=0.7.3",
 ]
 
+[project.scripts]
+resolve-splits = "cuvis_ai_dataloader.scripts.resolve_splits:resolve_splits_cli"
+
 [project.optional-dependencies]
 # Per-format heavy deps. The orchestrator composer installs the union of extras
 # a run actually activates, so a tiff_paired child env never pulls `cuvis`.

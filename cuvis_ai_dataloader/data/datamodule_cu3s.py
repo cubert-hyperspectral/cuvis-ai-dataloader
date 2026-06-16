@@ -1,12 +1,13 @@
 """cu3s DataModule: ``.cu3s`` cubes via the cuvis SDK + optional COCO masks.
 
-``DATA_MODULE_NAME = "cu3s"`` (manifest extras ``[cu3s, coco]``). Refactor of the
-former core ``SingleCu3sDataModule``: the split/dataloader plumbing moved up into
-``BaseHyperspectralDataModule``, cube reading into the internal ``Cu3sCubeReader``,
-and COCO labeling into the internal ``CocoLabeler``.
+``DATA_MODULE_NAME = "cu3s"`` (manifest extras ``[cu3s, coco]``). The split/dataloader
+plumbing lives in ``BaseCuvisAIDataModule``; cube reading is the internal
+``Cu3sCubeReader`` and COCO labeling the internal ``CocoLabeler``.
 
-A back-compat ``SingleCu3sDataModule`` alias and a ``SingleCu3sDataset`` shim keep
-the old call sites working with only an import-path change.
+Selector path: ``enumerate()`` lists the attributed measurement universe (single-file mode:
+one ref per measurement; folder mode: one ref per file at measurement 0), and
+``build_dataset_from_refs`` reads exactly the resolved subset. A back-compat
+``SingleCu3sDataModule`` alias and a ``SingleCu3sDataset`` shim keep old call sites working.
 """
 
 from __future__ import annotations
@@ -17,8 +18,8 @@ from typing import Any, ClassVar, Sequence
 
 from torch.utils.data import Dataset
 
-from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
-from cuvis_ai_schemas.training.data import DataSplitConfig
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
+from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef
 
 from ._extras import parse_bool, parse_int_list, parse_str_list
 from .readers.cu3s_reader import Cu3sCubeReader
@@ -36,7 +37,11 @@ def _sibling_json(annotation_json_path, cu3s_file_path) -> str | None:
 
 
 class _Cu3sDataset(Dataset):
-    """Torch Dataset over a list of cu3s measurement indices (+ optional masks)."""
+    """Torch Dataset over a list of cu3s measurement indices (+ optional masks).
+
+    Retained for the ``SingleCu3sDataset`` back-compat shim; the DataModule itself uses
+    ``_Cu3sRefDataset`` over resolved ``SampleRef``s.
+    """
 
     def __init__(
         self,
@@ -52,8 +57,6 @@ class _Cu3sDataset(Dataset):
         self._mesu_indices = [int(i) for i in mesu_indices]
         self._labeler = None
         if annotation_json_path:
-            # Imported lazily: coco_labeler pulls the [coco] extra (pycocotools /
-            # scikit-image), which a cu3s-without-labels or tiff-only env lacks.
             from .labelers.coco_labeler import CocoLabeler
 
             self._labeler = CocoLabeler(annotation_json_path)
@@ -69,42 +72,50 @@ class _Cu3sDataset(Dataset):
         return item
 
 
-class _Cu3sFolderDataset(Dataset):
-    """Torch Dataset over a folder of ``.cu3s`` files (measurement 0 of each).
+class _Cu3sRefDataset(Dataset):
+    """Torch Dataset over resolved ``SampleRef``s (single-file or folder).
 
-    One sample per file. Multi-measurement files are the domain of the single-file
-    module (``measurement_indices``) or ``cu3s_multi``; folder mode keeps the
-    universe one-entry-per-file so discovery stays a cheap glob (no SDK session per
-    file at setup). A sibling ``<stem>.json`` is loaded as COCO labels when present.
+    Readers and labelers are cached per source, so single-file mode reuses one SDK session
+    and folder mode opens a session only for the files actually selected (lazily, in
+    ``__getitem__``, never at setup).
     """
 
-    def __init__(
-        self,
-        files: Sequence[str],
-        *,
-        processing_mode: str = "Reflectance",
-    ) -> None:
-        self._files = [str(f) for f in files]
+    def __init__(self, refs: list[SampleRef], processing_mode: str) -> None:
+        self._refs = refs
         self._processing_mode = processing_mode
+        self._readers: dict[str, Cu3sCubeReader] = {}
+        self._labelers: dict[str, Any] = {}
 
-    def __len__(self) -> int:
-        return len(self._files)
+    def _reader_for(self, source: str) -> Cu3sCubeReader:
+        if source not in self._readers:
+            self._readers[source] = Cu3sCubeReader(source, processing_mode=self._processing_mode)
+        return self._readers[source]
 
-    def __getitem__(self, idx: int) -> dict:
-        path = self._files[idx]
-        reader = Cu3sCubeReader(path, processing_mode=self._processing_mode)
-        item = reader.read(0)
-        item["stem"] = Path(path).stem
-        item["mesu_index"] = int(idx)
-        sibling = _sibling_json(None, path)
-        if sibling:
+    def _labeler_for(self, annotation: str):
+        if annotation not in self._labelers:
             from .labelers.coco_labeler import CocoLabeler
 
-            item.update(CocoLabeler(sibling).load_for(0, item))
+            self._labelers[annotation] = CocoLabeler(annotation)
+        return self._labelers[annotation]
+
+    def __len__(self) -> int:
+        return len(self._refs)
+
+    def __getitem__(self, idx: int) -> dict:
+        ref = self._refs[idx]
+        read_pos = ref.index if ref.index is not None else 0
+        item = self._reader_for(ref.source).read(read_pos)
+        item["stem"] = ref.stem
+        # COCO image id (defaults to the read position); kept distinct from read_index.
+        image_id = ref.label_id if ref.label_id is not None else read_pos
+        item["read_index"] = int(read_pos)
+        item["mesu_index"] = int(image_id)
+        if ref.annotation:
+            item.update(self._labeler_for(ref.annotation).load_for(int(image_id), item))
         return item
 
 
-class Cu3sDataModule(BaseHyperspectralDataModule):
+class Cu3sDataModule(BaseCuvisAIDataModule):
     """cu3s + COCO DataModule on the shared base."""
 
     DATA_MODULE_NAME: ClassVar[str] = "cu3s"
@@ -120,23 +131,17 @@ class Cu3sDataModule(BaseHyperspectralDataModule):
         processing_mode: str = "Reflectance",
         measurement_indices: Any = None,
         normalize_to_unit: Any = False,
-        # Back-compat flat selectors (folded into splits when splits is None).
-        train_ids: list | None = None,
-        val_ids: list | None = None,
-        test_ids: list | None = None,
-        predict_ids: list | None = None,
         # Back-compat asset-resolution convenience.
         data_dir: str | None = None,
         dataset_name: str | None = None,
-        # Folder source: a data_dir without dataset_name globs *.{glob} into one
-        # ordered universe; split selectors then index into it.
+        # Folder source: a data_dir without dataset_name globs *.{glob} into one ordered
+        # universe; selectors then index into it.
         glob: Any = None,
         params: dict | None = None,
         **_: Any,
     ) -> None:
-        # Support `Cu3sDataModule(**cfg.data)` where cfg.data is the nested
-        # DataConfig shape {data_module, splits, params, batch_size}: pull the
-        # module-specific values out of params (explicit kwargs win).
+        # Support `Cu3sDataModule(**cfg.data)` where cfg.data is the nested DataConfig shape
+        # {data_module, splits, params, batch_size}: pull module values out of params.
         if params:
             cu3s_file_path = cu3s_file_path or params.get("cu3s_file_path")
             annotation_json_path = annotation_json_path or params.get("annotation_json_path")
@@ -147,21 +152,11 @@ class Cu3sDataModule(BaseHyperspectralDataModule):
             data_dir = data_dir or params.get("data_dir")
             dataset_name = dataset_name or params.get("dataset_name")
             glob = glob if glob is not None else params.get("glob")
-        if splits is None and any(
-            x is not None for x in (train_ids, val_ids, test_ids, predict_ids)
-        ):
-            splits = DataSplitConfig(
-                train_ids=list(train_ids or []),
-                val_ids=list(val_ids or []),
-                test_ids=list(test_ids or []),
-                predict_ids=list(predict_ids or []),
-            )
         super().__init__(splits=splits, batch_size=batch_size, num_workers=num_workers)
 
         if cu3s_file_path is None and data_dir and dataset_name:
             cu3s_file_path = str(Path(data_dir) / f"{dataset_name}.cu3s")
         self.cu3s_file_path = str(cu3s_file_path) if cu3s_file_path else None
-        # Folder mode: a data_dir with no single-file target. Glob defaults to *.cu3s.
         self.data_dir = Path(data_dir) if (self.cu3s_file_path is None and data_dir) else None
         self.cu3s_globs: list[str] | None = None
         if self.data_dir is not None:
@@ -183,6 +178,7 @@ class Cu3sDataModule(BaseHyperspectralDataModule):
             if isinstance(normalize_to_unit, str)
             else bool(normalize_to_unit)
         )
+        self._enum_labelers: dict[str, Any] = {}
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
@@ -191,8 +187,8 @@ class Cu3sDataModule(BaseHyperspectralDataModule):
         dataset_name = params.get("dataset_name")
         if not cu3s and not data_dir:
             raise ValueError(
-                "cu3s requires 'cu3s_file_path', or 'data_dir' (a folder of .cu3s "
-                "files, optionally with 'dataset_name' for a single named file), in params."
+                "cu3s requires 'cu3s_file_path', or 'data_dir' (a folder of .cu3s files, "
+                "optionally with 'dataset_name' for a single named file), in params."
             )
         if cu3s:
             if not str(cu3s).endswith(".cu3s"):
@@ -222,17 +218,7 @@ class Cu3sDataModule(BaseHyperspectralDataModule):
             if not os.path.exists(ann):
                 raise ValueError(f"annotation_json_path does not exist: {ann}")
 
-    def build_dataset(self, ids: Sequence[int | str] | None) -> Dataset:
-        if self.data_dir is not None:
-            return self._build_folder_dataset(ids)
-        effective = ids if ids is not None else self.measurement_indices
-        return _Cu3sDataset(
-            self.cu3s_file_path,
-            effective,
-            processing_mode=self.processing_mode,
-            annotation_json_path=self.annotation_json_path,
-        )
-
+    # -- selector contract -----------------------------------------------------
     def _list_folder_files(self) -> list[Path]:
         """Sorted, de-duplicated list of ``.cu3s`` files in the source folder."""
         files: list[Path] = []
@@ -243,31 +229,84 @@ class Cu3sDataModule(BaseHyperspectralDataModule):
             raise FileNotFoundError(f"No {self.cu3s_globs} files in {self.data_dir}")
         return files
 
-    def _build_folder_dataset(self, ids: Sequence[int | str] | None) -> Dataset:
-        """Resolve int positions / stem keys against the folder universe."""
-        files = self._list_folder_files()
-        if ids:
-            by_stem = {p.stem: p for p in files}
-            selected: list[Path] = []
-            for sel in ids:
-                if isinstance(sel, int):
-                    selected.append(files[sel])
-                elif sel in by_stem:
-                    selected.append(by_stem[sel])
-                else:
-                    raise ValueError(
-                        f"cu3s folder selector {sel!r} is neither an int position nor "
-                        f"a known .cu3s stem (have {len(files)} files)."
+    def _enum_labeler_for(self, annotation: str):
+        if annotation not in self._enum_labelers:
+            from .labelers.coco_labeler import CocoLabeler
+
+            self._enum_labelers[annotation] = CocoLabeler(annotation)
+        return self._enum_labelers[annotation]
+
+    def _attrs_for(
+        self, annotation: str | None, image_id: int, required: frozenset[str]
+    ) -> tuple[list[str], list[int]]:
+        """Populate (tags, category_ids) for a ref only when a stage needs them."""
+        if not annotation or not (required & {"tags", "category_ids"}):
+            return [], []
+        labeler = self._enum_labeler_for(annotation)
+        cats = labeler.categories_for(image_id)
+        tags = (["anomalous"] if cats else ["normal"]) if "tags" in required else []
+        return tags, (cats if "category_ids" in required else [])
+
+    def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
+        refs: list[SampleRef] = []
+        if self.data_dir is not None:
+            for path in self._list_folder_files():
+                source = str(path)
+                annotation = _sibling_json(None, source)
+                tags, cats = self._attrs_for(annotation, 0, required_attrs)
+                refs.append(
+                    SampleRef(
+                        source=source,
+                        index=0,
+                        label_id=0,
+                        stem=path.stem,
+                        annotation=annotation,
+                        tags=tags,
+                        category_ids=cats,
                     )
-            files = selected
-        return _Cu3sFolderDataset(files, processing_mode=self.processing_mode)
+                )
+        else:
+            source = self.cu3s_file_path
+            indices = self.measurement_indices
+            if indices is None:
+                reader = Cu3sCubeReader(source, processing_mode=self.processing_mode)
+                indices = range(reader.total_measurements)
+            annotation = self.annotation_json_path
+            stem = Path(source).stem
+            for m in indices:
+                m = int(m)
+                tags, cats = self._attrs_for(annotation, m, required_attrs)
+                refs.append(
+                    SampleRef(
+                        source=source,
+                        index=m,
+                        label_id=m,
+                        stem=stem,
+                        annotation=annotation,
+                        tags=tags,
+                        category_ids=cats,
+                    )
+                )
+        refs.sort(key=lambda r: (r.source, -1 if r.index is None else r.index))
+        return refs
+
+    def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
+        return _Cu3sRefDataset(refs, self.processing_mode)
+
+    def category_name_to_id(self) -> dict[str, int] | None:
+        annotation = self.annotation_json_path
+        if annotation is None and self.data_dir is not None:
+            files = self._list_folder_files()
+            annotation = _sibling_json(None, str(files[0])) if files else None
+        if not annotation:
+            return None
+        labeler = self._enum_labeler_for(annotation)
+        return {name: cid for cid, name in labeler.category_id_to_name.items()}
 
     def build_stage_dataset(self, stage: str) -> Dataset:
-        # cu3s has no module-owned splits; with DataConfig.splits=None (the
-        # inference case) every stage iterates the configured measurements (all
-        # measurements unless measurement_indices narrows it), or every file in
-        # folder mode.
-        return self.build_dataset(None)
+        # DataConfig.splits is None (the inference case): every stage iterates the whole
+        # configured universe (all measurements, or every file in folder mode).
+        return self.build_dataset_from_refs(self.enumerate())
 
 
 class SingleCu3sDataset(_Cu3sDataset):

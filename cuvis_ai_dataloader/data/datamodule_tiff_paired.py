@@ -1,20 +1,24 @@
 """tiff_paired DataModule: a directory of TIFF cubes + stem-keyed PNG labels.
 
-``DATA_MODULE_NAME = "tiff_paired"`` (manifest extras ``[tiff]``). Promoted from
-the HSIMetalScrap experiment's ``tiff_dataset.py``. Emits per file
-``{"cube", "wavelengths", "stem", "mesu_index", label_output_key?}``; the default
-label key ``label_rgb`` is what the HSIMetalScrap viz nodes consume.
+``DATA_MODULE_NAME = "tiff_paired"`` (manifest extras ``[tiff]``). Promoted from the
+HSIMetalScrap experiment's ``tiff_dataset.py``. Emits per file
+``{"cube", "wavelengths", "stem", "mesu_index", label_output_key?}``; the default label key
+``label_rgb`` is what the HSIMetalScrap viz nodes consume.
+
+Selector path: ``enumerate()`` lists one ref per TIFF file (``dir_indices`` selects by file
+position, ``stems`` by name); ``build_dataset_from_refs`` reads the resolved files. Paired
+PNGs drive the attributes (``tag`` / ``categories`` / AD-aware) for tiff too.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, ClassVar, Sequence
+from typing import Any, ClassVar
 
 from torch.utils.data import Dataset
 
-from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
-from cuvis_ai_schemas.training.data import DataSplitConfig
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
+from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef
 
 from ._extras import parse_float_list, parse_str_list
 from .labelers.paired_png_labeler import PairedPngLabeler
@@ -23,29 +27,34 @@ from .readers.tiff_reader import TiffCubeReader
 _DEFAULT_GLOBS = ("tif", "tiff")
 
 
-class _TiffPairedDataset(Dataset):
-    """Torch Dataset over a list of TIFF files (+ optional paired PNG labels)."""
+class _TiffPairedRefDataset(Dataset):
+    """Torch Dataset over resolved ``SampleRef``s (one TIFF file each, + optional PNG)."""
 
-    def __init__(self, files: list[Path], *, reader: TiffCubeReader, labeler) -> None:
-        self._files = list(files)
+    def __init__(self, refs: list[SampleRef], *, reader: TiffCubeReader, labeler) -> None:
+        self._refs = list(refs)
         self._reader = reader
         self._labeler = labeler
 
     def __len__(self) -> int:
-        return len(self._files)
+        return len(self._refs)
 
     def __getitem__(self, idx: int) -> dict:
-        path = self._files[idx]
+        ref = self._refs[idx]
+        path = Path(ref.source)
         item = self._reader.read(path)
-        item["stem"] = path.stem
+        item["stem"] = ref.stem
         item["mesu_index"] = int(idx)
-        if self._labeler is not None:
+        # Load the paired label only when this ref is annotated. enumerate() sets
+        # ref.annotation to the PNG path when it exists, so an unlabeled file is a valid
+        # unannotated sample (no label key) rather than a crash, which AD-aware splits
+        # (normals carry no label) rely on.
+        if self._labeler is not None and ref.annotation:
             cube = item["cube"]
-            item.update(self._labeler.load_for(path.stem, (cube.shape[0], cube.shape[1])))
+            item.update(self._labeler.load_for(ref.stem, (cube.shape[0], cube.shape[1])))
         return item
 
 
-class TiffPairedDataModule(BaseHyperspectralDataModule):
+class TiffPairedDataModule(BaseCuvisAIDataModule):
     """TIFF cubes + paired-PNG labels DataModule on the shared base."""
 
     DATA_MODULE_NAME: ClassVar[str] = "tiff_paired"
@@ -110,38 +119,69 @@ class TiffPairedDataModule(BaseHyperspectralDataModule):
         files = sorted(set(files))
         if not files:
             raise FileNotFoundError(f"No {self.globs} files in {self.images_dir}")
+        stems = [p.stem for p in files]
+        if len(set(stems)) != len(stems):
+            raise ValueError(
+                f"duplicate TIFF stems in {self.images_dir} (e.g. both .tif and .tiff); "
+                "stems must be unique to key paired labels and STEMS selectors."
+            )
         return files
 
-    def _make_dataset(self, files: list[Path]) -> Dataset:
-        reader = TiffCubeReader(wavelengths_override=self.wavelengths_override)
-        labeler = (
-            PairedPngLabeler(
-                self.labels_dir,
-                label_output_key=self.label_output_key,
-                label_mode=self.label_mode,
-            )
-            if self.labels_dir
-            else None
+    def _labeler(self) -> PairedPngLabeler | None:
+        if not self.labels_dir:
+            return None
+        return PairedPngLabeler(
+            self.labels_dir,
+            label_output_key=self.label_output_key,
+            label_mode=self.label_mode,
         )
-        return _TiffPairedDataset(files, reader=reader, labeler=labeler)
 
-    def build_dataset(self, ids: Sequence[int | str] | None) -> Dataset:
-        files = self._list_files()
-        if ids:
-            by_stem = {p.stem: p for p in files}
-            selected: list[Path] = []
-            for sel in ids:
-                if isinstance(sel, int):
-                    selected.append(files[sel])
-                elif sel in by_stem:
-                    selected.append(by_stem[sel])
-                else:
-                    raise ValueError(
-                        f"tiff_paired selector {sel!r} is neither an int position nor a "
-                        f"known TIFF stem (have {len(files)} files)."
-                    )
-            files = selected
-        return self._make_dataset(files)
+    def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
+        labeler = self._labeler() if (required_attrs & {"tags", "category_ids"}) else None
+        refs: list[SampleRef] = []
+        for path in self._list_files():
+            source = str(path)
+            annotation = None
+            tags: list[str] = []
+            cats: list[int] = []
+            if self.labels_dir is not None:
+                png = self.labels_dir / f"{path.stem}.png"
+                annotation = str(png) if png.exists() else None
+            if labeler is not None:
+                cats = labeler.categories_for(path.stem)
+                if "tags" in required_attrs:
+                    tags = ["anomalous"] if cats else ["normal"]
+                if "category_ids" not in required_attrs:
+                    cats = []
+            refs.append(
+                SampleRef(
+                    source=source,
+                    index=None,
+                    stem=path.stem,
+                    annotation=annotation,
+                    tags=tags,
+                    category_ids=cats,
+                )
+            )
+        refs.sort(key=lambda r: r.source)
+        return refs
+
+    def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
+        reader = TiffCubeReader(wavelengths_override=self.wavelengths_override)
+        return _TiffPairedRefDataset(refs, reader=reader, labeler=self._labeler())
+
+    def category_name_to_id(self) -> dict[str, int] | None:
+        if not self.labels_dir:
+            return None
+        if self.label_mode != "label_map":
+            return {"anomalous": 1, "normal": 0}
+        labeler = self._labeler()
+        names: dict[str, int] = {}
+        for path in self._list_files():
+            for cid in labeler.categories_for(path.stem):
+                names[str(cid)] = cid
+        return names or None
 
     def build_stage_dataset(self, stage: str) -> Dataset:
-        return self.build_dataset(None)
+        # DataConfig.splits is None (inference): iterate every TIFF file.
+        return self.build_dataset_from_refs(self.enumerate())

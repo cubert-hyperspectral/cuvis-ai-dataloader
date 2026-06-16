@@ -342,6 +342,23 @@ class CocoLabeler:
     def image_ids(self) -> list[int]:
         return self._coco.image_ids
 
+    def is_annotated(self, image_id: int) -> bool:
+        """True if ``image_id`` exists in the COCO and carries at least one annotation."""
+        if image_id not in self._coco.image_ids:
+            return False
+        return bool(self._coco.annotations.where(image_id=image_id))
+
+    def categories_for(self, image_id: int) -> list[int]:
+        """Distinct category ids annotated on ``image_id`` (empty -> unannotated / normal)."""
+        if image_id not in self._coco.image_ids:
+            return []
+        seen: list[int] = []
+        for ann in self._coco.annotations.where(image_id=image_id):
+            cid = int(ann.category_id)
+            if cid not in seen:
+                seen.append(cid)
+        return seen
+
     def _canvas_size(self, image_id: int, fallback_hw: tuple[int, int]) -> tuple[int, int]:
         """COCO image (height, width) for ``image_id``; falls back to the cube's."""
         fb_h, fb_w = int(fallback_hw[0]), int(fallback_hw[1])

@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 import torch
 
-from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_dataloader.data import SingleCu3sDataModule, SingleCu3sDataset
 from cuvis_ai_dataloader.data.datamodule_cu3s import Cu3sDataModule
-from cuvis_ai_schemas.training.data import DataSplitConfig
+from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
 
 
 def _make_cu3s(tmp_path, name="x.cu3s"):
@@ -26,9 +26,17 @@ def _make_cu3s_folder(tmp_path, n=4):
     return folder
 
 
+def _fi(source, ids):
+    return [Selector(kind=SelectorKind.FILE_INDICES, source=source, ids=ids)]
+
+
+def _dir(ids):
+    return [Selector(kind=SelectorKind.DIR_INDICES, ids=ids)]
+
+
 def test_data_module_name_and_subclass():
     assert Cu3sDataModule.DATA_MODULE_NAME == "cu3s"
-    assert issubclass(Cu3sDataModule, BaseHyperspectralDataModule)
+    assert issubclass(Cu3sDataModule, BaseCuvisAIDataModule)
     assert SingleCu3sDataModule is Cu3sDataModule  # back-compat alias
 
 
@@ -52,7 +60,6 @@ def test_predict_iterates_all_measurements(mock_cuvis_sdk, tmp_path):
     assert len(batches) == 7  # mock session has 7 measurements
     batch = batches[0]
     assert set(batch.keys()) >= {"cube", "mesu_index", "wavelengths"}
-    assert "stem" not in batch
     assert isinstance(batch["cube"], torch.Tensor)
     assert batch["cube"].shape[0] == 1  # batch dim
     assert batch["cube"].shape[-1] == mock_cuvis_sdk["channels"]
@@ -83,10 +90,11 @@ def test_mask_attached_when_annotation_given(mock_cuvis_sdk, tmp_path):
     assert sample["mask"].dtype == np.int32
 
 
-def test_setup_fit_from_splits(mock_cuvis_sdk, tmp_path):
+def test_setup_fit_from_selectors(mock_cuvis_sdk, tmp_path):
+    cu3s = _make_cu3s(tmp_path)
     dm = Cu3sDataModule(
-        cu3s_file_path=_make_cu3s(tmp_path),
-        splits=DataSplitConfig(train_ids=[0, 2, 3], val_ids=[1, 5]),
+        cu3s_file_path=cu3s,
+        splits=DataSplitConfig(train=_fi(cu3s, [0, 2, 3]), val=_fi(cu3s, [1, 5])),
         batch_size=2,
     )
     dm.setup(stage="fit")
@@ -96,20 +104,12 @@ def test_setup_fit_from_splits(mock_cuvis_sdk, tmp_path):
     assert train_batch["cube"].shape[0] == 2
 
 
-def test_back_compat_flat_ids_fold_into_splits(mock_cuvis_sdk, tmp_path):
-    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), train_ids=[0, 1], val_ids=[2])
-    assert dm.splits is not None
-    assert dm.splits.train_ids == [0, 1]
-    dm.setup(stage="fit")
-    assert len(dm._train_ds) == 2
-
-
 def test_nested_cfg_data_construction(mock_cuvis_sdk, tmp_path):
     # `Cu3sDataModule(**cfg.data)` with the nested DataConfig shape (data_module,
     # splits-as-dict, params) must work for config-driven (hydra) call sites.
     cfg_data = {
         "data_module": "cu3s",
-        "splits": {"predict_ids": []},
+        "splits": {"predict": []},
         "batch_size": 1,
         "num_workers": 0,
         "params": {"cu3s_file_path": _make_cu3s(tmp_path)},
@@ -127,10 +127,11 @@ def test_single_cu3s_dataset_shim(mock_cuvis_sdk, tmp_path):
     assert "cube" in item and "wavelengths" in item
 
 
-def test_setup_fit_expands_range_splits(mock_cuvis_sdk, tmp_path):
+def test_setup_fit_expands_range_selectors(mock_cuvis_sdk, tmp_path):
+    cu3s = _make_cu3s(tmp_path)
     dm = Cu3sDataModule(
-        cu3s_file_path=_make_cu3s(tmp_path),
-        splits=DataSplitConfig(train_ids=["0-3"], val_ids=[5, 6]),
+        cu3s_file_path=cu3s,
+        splits=DataSplitConfig(train=_fi(cu3s, ["0-3"]), val=_fi(cu3s, [5, 6])),
         batch_size=1,
     )
     dm.setup(stage="fit")
@@ -162,12 +163,18 @@ def test_folder_source_splits_by_position_and_stem(mock_cuvis_sdk, tmp_path):
     folder = _make_cu3s_folder(tmp_path, n=5)
     dm = Cu3sDataModule(
         data_dir=str(folder),
-        splits=DataSplitConfig(train_ids=[0, "scan_02"], val_ids=["1-2"]),
+        splits=DataSplitConfig(
+            train=[
+                Selector(kind=SelectorKind.DIR_INDICES, ids=[0]),
+                Selector(kind=SelectorKind.STEMS, stems=["scan_02"]),
+            ],
+            val=_dir(["3-4"]),  # disjoint from train (scan_00 + scan_02)
+        ),
         batch_size=1,
     )
     dm.setup(stage="fit")
     assert len(dm._train_ds) == 2  # position 0 + stem scan_02
-    assert len(dm._val_ds) == 2  # "1-2" -> positions 1, 2
+    assert len(dm._val_ds) == 2  # "3-4" -> positions 3, 4
 
 
 def test_folder_source_glob_filters_extensions(mock_cuvis_sdk, tmp_path):
@@ -194,7 +201,7 @@ def test_folder_unknown_selector_raises(mock_cuvis_sdk, tmp_path):
     folder = _make_cu3s_folder(tmp_path, n=2)
     dm = Cu3sDataModule(
         data_dir=str(folder),
-        splits=DataSplitConfig(train_ids=["does_not_exist"]),
+        splits=DataSplitConfig(train=[Selector(kind=SelectorKind.STEMS, stems=["does_not_exist"])]),
     )
-    with pytest.raises(ValueError, match="neither an int position"):
+    with pytest.raises(ValueError, match="matched 0 samples"):
         dm.setup(stage="fit")

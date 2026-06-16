@@ -1,6 +1,6 @@
 """cuvis-ai-dataloader: pluggable hyperspectral DataModules for Cuvis.AI.
 
-Ships concrete ``BaseHyperspectralDataModule`` subclasses (cu3s + COCO, TIFF +
+Ships concrete ``BaseCuvisAIDataModule`` subclasses (cu3s + COCO, TIFF +
 paired-PNG) with per-format heavy deps gated behind optional extras. The ``cuvis``
 SDK lives here only, behind the ``[cu3s]`` extra; no other Cuvis.AI repo pins it.
 """

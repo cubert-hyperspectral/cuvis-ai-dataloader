@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_dataloader.data.datamodule_cu3s_multi import MultiCu3sDataModule
+from cuvis_ai_dataloader.data.resolvers import import_csv_splits
+from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
 
 
 def _write_dataset(tmp_path):
@@ -25,7 +27,7 @@ def _write_dataset(tmp_path):
 
 def test_data_module_name_and_subclass():
     assert MultiCu3sDataModule.DATA_MODULE_NAME == "cu3s_multi"
-    assert issubclass(MultiCu3sDataModule, BaseHyperspectralDataModule)
+    assert issubclass(MultiCu3sDataModule, BaseCuvisAIDataModule)
 
 
 def test_validate_params_rejects_non_csv(tmp_path):
@@ -117,3 +119,39 @@ def test_ranged_image_id_reads_the_right_measurement(mock_cuvis_sdk, tmp_path):
     session.get_measurement.reset_mock()
     _ = dm._train_ds[2]  # third train sample -> measurement 2
     session.get_measurement.assert_any_call(2)
+
+
+def test_import_csv_splits_groups_per_source(mock_cuvis_sdk, tmp_path):
+    csv_path = _write_dataset(tmp_path)
+    dm = MultiCu3sDataModule(splits_csv=str(csv_path))
+    splits = import_csv_splits(dm)
+    # test split: frame_a + frame_b (one FILE_INDICES selector each); train: frame_c.
+    assert len(splits.train) == 1
+    assert len(splits.test) == 2
+    assert splits.train[0].kind == SelectorKind.FILE_INDICES
+    assert splits.train[0].source.endswith("frame_c.cu3s")
+    assert splits.train[0].ids == [0]
+
+
+def test_selector_path_resolves_against_csv_universe(mock_cuvis_sdk, tmp_path):
+    csv_path = _write_dataset(tmp_path)
+    frame_c = str((tmp_path / "frame_c.cu3s").resolve())
+    dm = MultiCu3sDataModule(
+        splits_csv=str(csv_path),
+        splits=DataSplitConfig(
+            train=[Selector(kind=SelectorKind.FILE_INDICES, source=frame_c, ids=[0])]
+        ),
+    )
+    dm.setup(stage="fit")
+    assert len(dm._train_ds) == 1  # selector resolved against the CSV universe
+
+
+def test_read_index_exceeding_measurements_raises_at_build(mock_cuvis_sdk, tmp_path):
+    (tmp_path / "clip.cu3s").write_bytes(b"")
+    csv_path = tmp_path / "splits.csv"
+    csv_path.write_text(
+        "split,cu3s_path,annotation_json,image_id\ntrain,clip.cu3s,,0-99\n"  # 99 >= mock 7
+    )
+    dm = MultiCu3sDataModule(splits_csv=str(csv_path))
+    with pytest.raises(ValueError, match="read_index 99 >= 7"):
+        dm.setup(stage="fit")

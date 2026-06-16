@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - Initial release. Pluggable hyperspectral **DataModules** on the SDK-free
-  `cuvis_ai_core.data.datamodule.BaseHyperspectralDataModule`:
+  `cuvis_ai_core.data.datamodule.BaseCuvisAIDataModule`:
   - **`Cu3sDataModule`** (`cu3s`, extras `[cu3s, coco]`): reads `.cu3s` cubes via
     the `cuvis` SDK and attaches COCO-derived masks. Refactor of the former core
     `SingleCu3sDataModule`; the public surface (`cu3s_file_path`,
@@ -17,9 +17,19 @@
     `label_rgb`).
   - **`MultiCu3sDataModule`** (`cu3s_multi`, extras `[cu3s, coco]`): multi-file
     cu3s driven by an external `splits.csv` (`split, cu3s_path, annotation_json,
-    image_id`), per-day COCO JSONs, module-owned splits (leaves
-    `DataConfig.splits = None` and overrides `build_stage_dataset`); one cached
-    `CocoLabeler` per unique annotation JSON.
+    image_id`), per-day COCO JSONs. Runs **module-owned** (the CSV `split` column,
+    `DataConfig.splits = None`) **or selector-driven** (the CSV rows are the
+    `enumerate()` universe); `read_index < total_measurements` is checked at build.
+- **Selector model + universe enumeration.** Each module implements
+  `enumerate(required_attrs)` (attributed `SampleRef`s with a content-derived `uid`, canonical order,
+  attributes only when a `tag`/`categories` selector needs them) and `build_dataset_from_refs(refs)`;
+  the cu3s/tiff readers are cached per source, so single-file mode opens one SDK session and folder
+  mode stays a glob at setup. `CocoLabeler` gains `is_annotated`/`categories_for`; `PairedPngLabeler`
+  derives `category_ids` from PNG mask values, so `tag`/`categories`/AD-aware work for tiff too.
+- **Split resolvers + `resolve-splits` CLI.** New `data/resolvers.py` (`resolve_random` /
+  `resolve_stratified`, seeded, AD-aware train-on-normals, opt-in `group_by` to keep a file whole;
+  `import_csv_splits` to fold a cu3s_multi CSV into selectors) and a `resolve-splits` CLI that writes
+  a committable `splits.json` (incl. `--from-csv`).
 - **Richer split selectors.** `Cu3sDataModule` gains a **folder source**: a `data_dir` (directory)
   without `dataset_name` globs `*.{glob}` (default `cu3s`) into one ordered universe, and split
   selectors index into it by int position or filename stem. `measurement_indices` accepts inclusive

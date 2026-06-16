@@ -1,10 +1,16 @@
-"""cu3s_multi DataModule: multi-file cu3s with CSV-encoded splits + per-day COCO.
+"""cu3s_multi DataModule: multi-file cu3s with a CSV universe + per-day COCO.
 
-``DATA_MODULE_NAME = "cu3s_multi"`` (manifest extras ``[cu3s, coco]``). One ``.cu3s``
-per frame, per-day COCO JSONs, an externally-supplied ``splits.csv`` whose rows are
-``(split, cu3s_path, annotation_json, image_id)``. The split assignment is
-module-owned (it lives in the CSV, not a flat id-list), so this module leaves
-``DataConfig.splits = None`` and overrides ``build_stage_dataset``.
+``DATA_MODULE_NAME = "cu3s_multi"`` (manifest extras ``[cu3s, coco]``). One ``.cu3s`` per
+frame, per-day COCO JSONs, an externally-supplied ``splits.csv`` whose rows are
+``(split, cu3s_path, annotation_json, image_id)``.
+
+Two ways to run:
+
+* **Module-owned** (``DataConfig.splits is None``): each Lightning stage maps to the CSV
+  ``split`` column via ``build_stage_dataset``.
+* **Selector-driven** (``DataConfig.splits`` set): the CSV rows are the ``enumerate()``
+  universe and selectors (or a ``splits.json`` produced by ``resolve-splits --from-csv``)
+  pick subsets. Each row is a first-class ``SampleRef`` with a content-derived ``uid``.
 """
 
 from __future__ import annotations
@@ -15,8 +21,9 @@ from typing import Any, ClassVar
 
 from torch.utils.data import Dataset
 
-from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_core.utils.general import expand_range_selectors
+from cuvis_ai_schemas.training.data import SampleRef
 
 from .readers.cu3s_reader import Cu3sCubeReader
 
@@ -24,12 +31,18 @@ _REQUIRED_COLUMNS = ("split", "cu3s_path", "annotation_json", "image_id")
 
 
 class _MultiCu3sDataset(Dataset):
-    """Holds the rows for one split; reads each frame's cube + per-day mask."""
+    """Holds the rows for one subset; reads each frame's cube + per-day mask."""
 
     def __init__(self, rows: list[dict], processing_mode: str) -> None:
         self._rows = rows
         self._processing_mode = processing_mode
+        self._readers: dict[str, Cu3sCubeReader] = {}
         self._labelers: dict[str, Any] = {}
+
+    def _reader_for(self, source: str) -> Cu3sCubeReader:
+        if source not in self._readers:
+            self._readers[source] = Cu3sCubeReader(source, processing_mode=self._processing_mode)
+        return self._readers[source]
 
     def _labeler_for(self, ann: str):
         if ann not in self._labelers:
@@ -43,10 +56,10 @@ class _MultiCu3sDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         rec = self._rows[idx]
-        reader = Cu3sCubeReader(rec["cu3s_path"], processing_mode=self._processing_mode)
-        item = reader.read(rec["read_index"])
+        item = self._reader_for(rec["cu3s_path"]).read(rec["read_index"])
         item.update(
             {
+                "read_index": int(rec["read_index"]),
                 "mesu_index": int(rec["image_id"]),
                 "frame_id": int(rec["frame_id"]),
                 "annotation_json": rec["annotation_json"],
@@ -58,7 +71,7 @@ class _MultiCu3sDataset(Dataset):
         return item
 
 
-class MultiCu3sDataModule(BaseHyperspectralDataModule):
+class MultiCu3sDataModule(BaseCuvisAIDataModule):
     """Multi-file cu3s DataModule driven by an external ``splits.csv``."""
 
     DATA_MODULE_NAME: ClassVar[str] = "cu3s_multi"
@@ -79,13 +92,13 @@ class MultiCu3sDataModule(BaseHyperspectralDataModule):
             splits_csv = splits_csv or params.get("splits_csv")
             processing_mode = params.get("processing_mode", processing_mode)
             split = split if split is not None else params.get("split")
-        super().__init__(splits=None, batch_size=batch_size, num_workers=num_workers)
+        super().__init__(splits=splits, batch_size=batch_size, num_workers=num_workers)
         if not splits_csv:
             raise ValueError("cu3s_multi requires 'splits_csv'.")
         self._splits_csv = Path(splits_csv).resolve()
         self._csv_dir = self._splits_csv.parent
         self._processing_mode = processing_mode
-        self._predict_split = split  # which CSV split predict_dataloader iterates
+        self._predict_split = split  # which CSV split predict_dataloader iterates (module-owned)
         self._rows = self._parse_csv(self._splits_csv)
 
     @staticmethod
@@ -98,18 +111,100 @@ class MultiCu3sDataModule(BaseHyperspectralDataModule):
         if not Path(csv_path).is_file():
             raise ValueError(f"splits_csv does not exist: {csv_path}")
 
+    # -- module-owned path -----------------------------------------------------
     def build_stage_dataset(self, stage: str) -> Dataset:
-        # DataConfig.splits is None, so the base routes every stage here. Map the
-        # lightning stage to a CSV split (predict honors --data-arg split, default test).
+        # DataConfig.splits is None: map the lightning stage to a CSV split (predict honors
+        # --data-arg split, default test).
         split = (self._predict_split or "test") if stage == "predict" else stage
         rows = [r for r in self._rows if split == "all" or r["split"] == split]
-        # Lazy heavy imports land here, never at module top.
+        return self._make_dataset(rows)
+
+    # -- selector path ---------------------------------------------------------
+    def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
+        labelers: dict[str, Any] = {}
+
+        def attrs(ann: str | None, image_id: int) -> tuple[list[str], list[int]]:
+            if not ann or not (required_attrs & {"tags", "category_ids"}):
+                return [], []
+            if ann not in labelers:
+                from .labelers.coco_labeler import CocoLabeler
+
+                labelers[ann] = CocoLabeler(annotation_json_path=ann)
+            cats = labelers[ann].categories_for(image_id)
+            tags = (["anomalous"] if cats else ["normal"]) if "tags" in required_attrs else []
+            return tags, (cats if "category_ids" in required_attrs else [])
+
+        refs: list[SampleRef] = []
+        for rec in self._rows:
+            ann = rec["annotation_json"] or None
+            tags, cats = attrs(ann, int(rec["image_id"]))
+            refs.append(
+                SampleRef(
+                    source=rec["cu3s_path"],
+                    index=int(rec["read_index"]),
+                    label_id=int(rec["image_id"]),
+                    stem=Path(rec["cu3s_path"]).stem,
+                    annotation=ann,
+                    group=rec["cu3s_path"],
+                    tags=tags,
+                    category_ids=cats,
+                )
+            )
+        refs.sort(
+            key=lambda r: (
+                r.source,
+                -1 if r.index is None else r.index,
+                -1 if r.label_id is None else r.label_id,
+            )
+        )
+        return refs
+
+    def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
+        rows = []
+        for i, ref in enumerate(refs):
+            read_index = int(ref.index if ref.index is not None else 0)
+            image_id = int(ref.label_id if ref.label_id is not None else read_index)
+            rows.append(
+                {
+                    "frame_id": i,
+                    "cu3s_path": ref.source,
+                    "annotation_json": ref.annotation or "",
+                    "image_id": image_id,
+                    "read_index": read_index,
+                }
+            )
+        return self._make_dataset(rows)
+
+    def category_name_to_id(self) -> dict[str, int] | None:
+        for rec in self._rows:
+            ann = rec["annotation_json"]
+            if ann:
+                from .labelers.coco_labeler import CocoLabeler
+
+                labeler = CocoLabeler(annotation_json_path=ann)
+                return {name: cid for cid, name in labeler.category_id_to_name.items()}
+        return None
+
+    # -- shared dataset construction -------------------------------------------
+    def _make_dataset(self, rows: list[dict[str, Any]]) -> Dataset:
         from ._extras import require_cuvis, require_pycocotools, require_skimage_polygon2mask
 
         require_cuvis()
         require_pycocotools()
         require_skimage_polygon2mask()
+        self._validate_read_indices(rows)
         return _MultiCu3sDataset(rows, self._processing_mode)
+
+    def _validate_read_indices(self, rows: list[dict[str, Any]]) -> None:
+        """Fail loud at build if any row's read_index exceeds its file's measurement count."""
+        max_by_source: dict[str, int] = {}
+        for rec in rows:
+            src = rec["cu3s_path"]
+            max_by_source[src] = max(max_by_source.get(src, -1), int(rec["read_index"]))
+        for src, max_ri in max_by_source.items():
+            total = Cu3sCubeReader(src, processing_mode=self._processing_mode).total_measurements
+            if max_ri >= total:
+                raise ValueError(f"row read_index {max_ri} >= {total} measurements in {src}")
 
     def _parse_csv(self, csv_path: Path) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -127,9 +222,9 @@ class MultiCu3sDataModule(BaseHyperspectralDataModule):
                 annotation_json = (
                     str(self._resolve(row["annotation_json"])) if row["annotation_json"] else ""
                 )
-                # A ranged image_id ("0-5") fans the row out into one sample per
-                # measurement m (read measurement m, COCO image_id m); a scalar keeps
-                # the legacy single-frame-per-file behavior (read measurement 0).
+                # A ranged image_id ("0-5") fans the row out into one sample per measurement m
+                # (read measurement m, COCO image_id m); a scalar keeps the legacy single-frame
+                # behavior (read measurement 0).
                 cell = str(row["image_id"]).strip()
                 if "-" in cell:
                     measurements = [int(x) for x in expand_range_selectors([cell])]
@@ -140,7 +235,7 @@ class MultiCu3sDataModule(BaseHyperspectralDataModule):
                 for m in measurements:
                     out.append(
                         {
-                            "frame_id": frame_counter,  # stable global identity
+                            "frame_id": frame_counter,  # stable global row identity
                             "split": row["split"],
                             "cu3s_path": cu3s_path,
                             "annotation_json": annotation_json,
