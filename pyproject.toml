@@ -29,7 +29,19 @@ cu3s = ["cuvis>=3.5.0", "cuvis-il<3.5.3; sys_platform == 'win32'"]
 coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1"]
 tiff = ["tifffile>=2024.5.0"]
 all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
-dev = ["cuvis-ai-dataloader[all]", "pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.14.13"]
+dev = [
+    "cuvis-ai-dataloader[all]",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.14.13",
+    "mypy>=1.10.0",
+    "pip-audit>=2.7.0",
+    "bandit[toml]>=1.7.0",
+    "detect-secrets>=1.4.0",
+    "pip-licenses>=4.0.0",
+    "cyclonedx-bom>=4.0.0",
+    "twine>=6.2.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["cuvis_ai_dataloader*"]
@@ -50,3 +62,15 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+exclude = ["tests", "build", "dist"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B101"]  # assert_used: asserts are fine in this codebase
