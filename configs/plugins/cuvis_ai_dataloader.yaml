@@ -3,11 +3,10 @@
 # kind=data_module entries register into the DataModule registry (never the node
 # palette); `extras` names the pip extras the orchestrator composer installs for
 # a run that selects that module.
-plugins:
-  cuvis_ai_dataloader:
-    path: "../.."                      # resolves from configs/plugins/ to the repo root
-    package_name: cuvis-ai-dataloader  # manifest key (underscore) != PyPI name (hyphen)
-    provides:
-      - { class_name: cuvis_ai_dataloader.data.datamodule_cu3s.Cu3sDataModule,              kind: data_module, data_module_name: cu3s,        extras: [cu3s, coco] }
-      - { class_name: cuvis_ai_dataloader.data.datamodule_cu3s_multi.MultiCu3sDataModule,   kind: data_module, data_module_name: cu3s_multi,  extras: [cu3s, coco] }
-      - { class_name: cuvis_ai_dataloader.data.datamodule_tiff_paired.TiffPairedDataModule, kind: data_module, data_module_name: tiff_paired, extras: [tiff] }
+name: cuvis_ai_dataloader
+path: "../.."                      # resolves from configs/plugins/ to the repo root
+package_name: cuvis-ai-dataloader  # manifest key (underscore) != PyPI name (hyphen)
+capabilities:
+  - { class_name: cuvis_ai_dataloader.data.datamodule_cu3s.Cu3sDataModule,              kind: data_module, data_module_name: cu3s,        extras: [cu3s, coco] }
+  - { class_name: cuvis_ai_dataloader.data.datamodule_cu3s_multi.MultiCu3sDataModule,   kind: data_module, data_module_name: cu3s_multi,  extras: [cu3s, coco] }
+  - { class_name: cuvis_ai_dataloader.data.datamodule_tiff_paired.TiffPairedDataModule, kind: data_module, data_module_name: tiff_paired, extras: [tiff] }
