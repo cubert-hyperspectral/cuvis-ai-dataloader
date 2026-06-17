@@ -28,6 +28,24 @@ uv sync --extra dev
 The `cu3s` extra carries the Windows `cuvis-il<3.5.3` pin (the last build with a
 `win_amd64` wheel).
 
+## Cuvis SDK (system install, required for `cu3s`)
+
+The `[cu3s]` extra installs the `cuvis` Python package, but that is only a
+binding: the **C++ Cuvis SDK** must also be installed system-wide, or any
+`.cu3s` / `.cu3` read fails at runtime.
+
+> **macOS not supported.** Cuvis SDK ships for Windows and Linux only. On macOS,
+> `.cu3s` / `.cu3` reads fail at runtime; the `tiff_paired` module and any
+> numpy / video input still work.
+
+Obtain a build matching the `cuvis>=3.5.0` pin for your OS from the
+[Cuvis SDK download page](https://cubert-hyperspectral.github.io/cuvis.sdk/installation/),
+then verify:
+
+```bash
+uv run python -c "import cuvis; print(cuvis.__version__)"
+```
+
 ## Use
 
 **Inference** (`restore-pipeline`) selects a module + its params on the CLI:
