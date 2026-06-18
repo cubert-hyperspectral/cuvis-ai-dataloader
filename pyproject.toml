@@ -24,7 +24,7 @@ keywords = [
 ]
 dependencies = [
     "cuvis-ai-core>=0.7.1",
-    "cuvis-ai-schemas>=0.5.1",
+    "cuvis-ai-schemas>=0.6.0",
     "numpy",
     "torch",
     "pytorch-lightning",
@@ -84,7 +84,6 @@ include = ["cuvis_ai_dataloader*"]
 
 [tool.uv.sources]
 cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
-cuvis-ai-schemas = { path = "../../cuvis-ai-schemas/cuvis-ai-schemas", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
