@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## 0.1.0 - 2026-06-19
+
+- Requires `cuvis-ai-core>=0.8.0` and `cuvis-ai-schemas>=0.6.0`, consumed from PyPI; the local development wiring is removed.
 - Added the initial release: pluggable hyperspectral DataModules on cuvis-ai-core's SDK-free `BaseCuvisAIDataModule`, each declared in `configs/plugins/cuvis_ai_dataloader.yaml` as a `kind: data_module` entry with its `data_module_name` and pip `extras`. The `cuvis` SDK lives only here, behind `[cu3s]`.
 - Added `Cu3sDataModule` (`cu3s`, `[cu3s, coco]`): reads `.cu3s` cubes via the `cuvis` SDK with COCO-derived masks. Refactor of core's former `SingleCu3sDataModule`, preserving its public surface (`cu3s_file_path`, `annotation_json_path`, `processing_mode`, `measurement_indices`, sibling `<stem>.json` auto-discovery); ships `SingleCu3sDataModule` / `SingleCu3sDataset` back-compat aliases (import-path-only migration).
 - Added `TiffPairedDataModule` (`tiff_paired`, `[tiff]`): reads a directory of TIFF cubes (axes SYX / YXS / YX) via `tifffile`, parses wavelengths from the GDAL_METADATA ENVI tag, and pairs stem-keyed PNG labels (default `label_rgb`).

@@ -23,7 +23,7 @@ keywords = [
     "machine-learning",
 ]
 dependencies = [
-    "cuvis-ai-core>=0.7.1",
+    "cuvis-ai-core>=0.8.0",
     "cuvis-ai-schemas>=0.6.0",
     "numpy",
     "torch",
@@ -83,7 +83,15 @@ include = ["cuvis_ai_dataloader*"]
 [tool.setuptools_scm]
 
 [tool.uv.sources]
-cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+# Local development alternative (uncomment to use a local checkout instead)
+# cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
