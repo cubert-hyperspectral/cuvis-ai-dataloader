@@ -1,20 +1,41 @@
 # Changelog
 
-## [Unreleased]
+All notable changes are documented here. The format follows Keep a Changelog and the project
+uses semantic versioning.
 
-- **Breaking:** removed the `SingleCu3sDataModule` / `SingleCu3sDataset` back-compat aliases (and the internal `_Cu3sDataset` they were built on). Use `Cu3sDataModule` directly: `cu3s_file_path=` for a single cube or `data_dir=` for a folder of cubes. For the former single-frame dataset access, use `Cu3sDataModule(...).setup("predict")` then `predict_ds`.
+## 0.1.0 - 2026-06-22
 
-## 0.1.0 - 2026-06-19
+- **Initial release.** Pluggable hyperspectral DataModules on cuvis-ai-core's SDK-free
+  `BaseCuvisAIDataModule`, each declared in `configs/plugins/cuvis_ai_dataloader.yaml` as a
+  `kind: data_module` entry (`data_module_name` + pip `extras`). The `cuvis` SDK lives only here,
+  behind the `[cu3s]` extra.
+- **`Cu3sDataModule`** (`cu3s`, `[cu3s, coco]`): reads `.cu3s` cubes via the `cuvis` SDK with
+  COCO-derived masks, preserving core's former `SingleCu3sDataModule` surface (`cu3s_file_path`,
+  `annotation_json_path`, `processing_mode`, `measurement_indices`, sibling `<stem>.json`
+  auto-discovery). For single-frame access, call `.setup("predict")` then read `predict_ds`.
+- **`TiffPairedDataModule`** (`tiff_paired`, `[tiff]`): reads a directory of TIFF cubes (SYX / YXS /
+  YX) via `tifffile`, parses wavelengths from the `GDAL_METADATA` ENVI tag as `int32` nm for parity
+  with the cu3s reader and channel selectors, and pairs stem-keyed PNG labels (default `label_rgb`).
+- **`MultiCu3sDataModule`** (`cu3s_multi`, `[cu3s, coco]`): multi-file cu3s driven by a CSV split
+  column (`split, cu3s_path, annotation_json, image_id`) with per-day COCO JSONs; runs module-owned
+  or selector-driven, with a `read_index < total_measurements` bounds check at build.
+- **Selector split model.** Each module implements `enumerate(required_attrs)` (attributed
+  `SampleRef`s with source/read-index `uid`s, attributes materialized only when a selector needs
+  them) and `build_dataset_from_refs(refs)`; readers are cached per source.
+- **Attribute labelers.** `CocoLabeler` gains `is_annotated` / `categories_for`; `PairedPngLabeler`
+  derives `category_ids` from PNG mask values, so `tag` / `categories` / AD-aware splits work for
+  TIFF too.
+- **Split resolvers + `resolve-splits` CLI.** `data/resolvers.py` (`resolve_random` /
+  `resolve_stratified`, seeded, AD-aware train-on-normals, opt-in `group_by`, `import_csv_splits`)
+  writes a committable `splits.json` (incl. `--from-csv`).
+- **Range selectors.** A `data_dir` without `dataset_name` globs `*.cu3s` into one ordered universe;
+  `measurement_indices` and split id-lists accept range strings (`"0-100"`, `"0-10:2"`); a ranged
+  `image_id` fans a CSV row into one sample per measurement.
+- **Lazy heavy-dep imports** (`data/_extras.py`): `cuvis` / `tifffile` / `pycocotools` load on first
+  use, so the manifest registers with any subset of extras installed.
+- **Dependencies.** Requires `cuvis-ai-core>=0.8.0` and `cuvis-ai-schemas>=0.6.0` from PyPI.
+- **Packaging + CI.** Apache-2.0 metadata; a tag-triggered `pypi-release` workflow (build, validate,
+  TestPyPI then PyPI via trusted publishing, GitHub release with SBOM + license report); a `ci`
+  workflow (pytest+coverage, mypy, ruff, pip-audit / detect-secrets / bandit) and a compatibility
+  workflow auditing dependency floors against core's lock; Dependabot for pip and Actions.
 
-- Requires `cuvis-ai-core>=0.8.0` and `cuvis-ai-schemas>=0.6.0`, consumed from PyPI; the local development wiring is removed.
-- Added the initial release: pluggable hyperspectral DataModules on cuvis-ai-core's SDK-free `BaseCuvisAIDataModule`, each declared in `configs/plugins/cuvis_ai_dataloader.yaml` as a `kind: data_module` entry with its `data_module_name` and pip `extras`. The `cuvis` SDK lives only here, behind `[cu3s]`.
-- Added `Cu3sDataModule` (`cu3s`, `[cu3s, coco]`): reads `.cu3s` cubes via the `cuvis` SDK with COCO-derived masks. Refactor of core's former `SingleCu3sDataModule`, preserving its public surface (`cu3s_file_path`, `annotation_json_path`, `processing_mode`, `measurement_indices`, sibling `<stem>.json` auto-discovery); ships `SingleCu3sDataModule` / `SingleCu3sDataset` back-compat aliases (import-path-only migration).
-- Added `TiffPairedDataModule` (`tiff_paired`, `[tiff]`): reads a directory of TIFF cubes (axes SYX / YXS / YX) via `tifffile`, parses wavelengths from the GDAL_METADATA ENVI tag (emitted as `int32` nm for parity with the cu3s reader and the channel selectors), and pairs stem-keyed PNG labels (default `label_rgb`).
-- Added `MultiCu3sDataModule` (`cu3s_multi`, `[cu3s, coco]`): multi-file cu3s driven by a CSV split column (`split, cu3s_path, annotation_json, image_id`) with per-day COCO JSONs. Runs module-owned (the CSV `split`, `DataConfig.splits = None`) or selector-driven (the CSV rows are the `enumerate()` universe); checks `read_index < total_measurements` at build.
-- Added the selector model and universe enumeration: each module implements `enumerate(required_attrs)` (attributed `SampleRef`s with a `uid` derived from source and read index, canonical order, attributes materialized only when a `tag` / `categories` selector needs them) and `build_dataset_from_refs(refs)`. Readers are cached per source, so single-file mode opens one SDK session and folder mode stays a glob at setup.
-- Added attribute labelers: `CocoLabeler` gains `is_annotated` / `categories_for`; `PairedPngLabeler` derives `category_ids` from PNG mask values, so `tag` / `categories` / AD-aware splits work for tiff too.
-- Added split resolvers and a `resolve-splits` CLI: new `data/resolvers.py` (`resolve_random` / `resolve_stratified`, seeded, AD-aware train-on-normals, opt-in `group_by` to keep a file whole; `import_csv_splits` to fold a cu3s_multi CSV into selectors) and a `resolve-splits` CLI that writes a committable `splits.json` (incl. `--from-csv`).
-- Added richer split selectors: `Cu3sDataModule` gains a folder source (a `data_dir` without `dataset_name` globs `*.cu3s` into one ordered universe, indexed by position or stem); `measurement_indices` and `DataConfig.splits` id-lists accept inclusive range strings (`"0-100"`, `"0-10:2"`); a ranged `image_id` cell fans a CSV row into one sample per measurement (a scalar `image_id` keeps the single-frame behavior).
-- Added lazy heavy-dep imports (`data/_extras.py`): `cuvis` / `tifffile` / `pycocotools` load only on first use, so the manifest registers cleanly with any subset of extras installed. Internal `data/readers` (`Cu3sCubeReader`, `TiffCubeReader`) and `data/labelers` are reused across modules, not a plugin contract.
-- Added PyPI packaging: Apache-2.0 license, classifiers, keywords and project URLs in the package metadata, and a tag-triggered `pypi-release` workflow (build, validate, publish to TestPyPI then PyPI via trusted publishing, then a GitHub release with the SBOM and license report).
-- Added CI: a `ci` workflow (tests with coverage, mypy, ruff check and format, and a security scan with pip-audit / detect-secrets / bandit) and a `cuvis-ai compatibility` workflow auditing this plugin's dependency floors against cuvis-ai-core's lock. Dependabot tracks pip and Actions updates.
