@@ -1,0 +1,46 @@
+#!/bin/bash
+# Pre-push hook: format + lint + docstring coverage + tests on the committed code.
+# Skip with: git push --no-verify
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Assumes the dev env is installed (uv sync --extra dev). Unlike cuvis-ai this hook does
+# not run `uv sync --all-extras`: the `cu3s` extra has no macOS wheel, so a blanket sync
+# would block pushes on macOS. The mock-SDK tests don't need the real `cuvis` binding.
+set -e
+
+unset GIT_DIR GIT_WORK_TREE VIRTUAL_ENV
+
+echo "→ Ruff format check..."
+if ! uv run --no-sync ruff format --check cuvis_ai_dataloader/ tests/; then
+    echo "✗ Code is not formatted. Run: uv run ruff format cuvis_ai_dataloader/ tests/"
+    exit 1
+fi
+
+echo "→ Ruff lint..."
+if ! uv run --no-sync ruff check cuvis_ai_dataloader/ tests/; then
+    echo "✗ Ruff lint failed. Fix the errors above and re-commit."
+    exit 1
+fi
+
+echo "→ Docstring coverage (interrogate, ≥95%)..."
+# Prefer the cached tool so the gate runs offline; fetch only when it isn't cached yet.
+if uvx --offline interrogate --version >/dev/null 2>&1; then
+    _interrogate="uvx --offline interrogate"
+else
+    _interrogate="uvx interrogate"
+fi
+if ! $_interrogate cuvis_ai_dataloader/; then
+    echo ""
+    echo "✗ Docstring coverage below 95%. See misses:  uvx interrogate -vv cuvis_ai_dataloader/"
+    echo "  (config in pyproject.toml [tool.interrogate])"
+    exit 1
+fi
+
+echo "→ pytest (excluding slow/gpu)..."
+if ! uv run --no-sync python -m pytest tests/ --tb=line -m "not slow and not gpu"; then
+    echo "✗ Tests failed. Fix them and re-commit before pushing."
+    exit 1
+fi
+
+echo "✓ All pre-push checks passed."
+exit 0

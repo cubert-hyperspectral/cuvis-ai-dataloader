@@ -1,0 +1,128 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuvis-ai-dataloader"
+dynamic = ["version"]
+description = "Pluggable hyperspectral DataModules (cu3s + COCO, TIFF + paired-PNG) for the Cuvis.AI ecosystem"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = "Apache-2.0"
+authors = [{ name = "Cubert GmbH", email = "cuvis.ai@cubert-gmbh.com" }]
+keywords = [
+    "hyperspectral",
+    "cuvis",
+    "datamodule",
+    "dataloader",
+    "pytorch-lightning",
+    "cu3s",
+    "coco",
+    "tiff",
+    "ai",
+    "machine-learning",
+]
+dependencies = [
+    "cuvis-ai-core>=0.8.0",
+    "cuvis-ai-schemas>=0.6.0",
+    "numpy",
+    "torch",
+    "pytorch-lightning",
+    "pillow>=12.2.0",
+    "loguru>=0.7.3",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://www.cubert-hyperspectral.com/"
+Repository = "https://github.com/cubert-hyperspectral/cuvis-ai-dataloader"
+Issues = "https://github.com/cubert-hyperspectral/cuvis-ai-dataloader/issues"
+Changelog = "https://github.com/cubert-hyperspectral/cuvis-ai-dataloader/blob/main/CHANGELOG.md"
+Source = "https://github.com/cubert-hyperspectral/cuvis-ai-dataloader"
+
+[project.scripts]
+resolve-splits = "cuvis_ai_dataloader.scripts.resolve_splits:resolve_splits_cli"
+
+[project.optional-dependencies]
+# Per-format heavy deps. The orchestrator composer installs the union of extras
+# a run actually activates, so a tiff_paired child env never pulls `cuvis`.
+cu3s = ["cuvis>=3.5.0", "cuvis-il<3.5.3; sys_platform == 'win32'"]
+coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1"]
+tiff = ["tifffile>=2024.5.0"]
+all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
+dev = [
+    "cuvis-ai-dataloader[all]",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.14.13",
+    "mypy>=1.10.0",
+    "pip-audit>=2.7.0",
+    "bandit[toml]>=1.7.0",
+    "detect-secrets>=1.4.0",
+    "pip-licenses>=4.0.0",
+    "cyclonedx-bom>=4.0.0",
+    "twine>=6.2.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["cuvis_ai_dataloader*"]
+
+[tool.setuptools_scm]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+# Local development alternative (uncomment to use a local checkout instead)
+# cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "gpu: marks tests that require a GPU",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+exclude = ["tests", "build", "dist"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B101"]  # assert_used: asserts are fine in this codebase
+
+# Docstring-coverage gate for the pre-push hook (run via `uvx interrogate`, so it stays out
+# of the locked dependency set and the torch cu128 pins).
+[tool.interrogate]
+ignore-init-method = true
+ignore-magic = true
+ignore-private = true
+ignore-semiprivate = true
+ignore-nested-functions = true
+fail-under = 95
+exclude = ["tests", "build", "dist"]
