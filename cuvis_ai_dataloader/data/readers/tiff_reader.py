@@ -34,7 +34,12 @@ class TiffCubeReader:
         )
 
     def read(self, path: str | Path) -> dict:
-        """Read ``path`` into ``{"cube": (H, W, C) float32, "wavelengths": float32[C]}``."""
+        """Read ``path`` into ``{"cube": (H, W, C) float32, "wavelengths": int32[C]}``.
+
+        Wavelengths are emitted as ``int32`` (nm) to match the cu3s reader and the channel
+        selectors' ``wavelengths`` port (``np.int32``), so ``tiff_paired`` is interchangeable
+        with ``cu3s`` in the same pipelines.
+        """
         tifffile = require_tifffile()
         path = Path(path)
         with tifffile.TiffFile(str(path)) as tf:
@@ -57,7 +62,8 @@ class TiffCubeReader:
             raise ValueError(
                 f"{path}: wavelength count {wavelengths.size} != band count {cube.shape[-1]}"
             )
-        return {"cube": cube, "wavelengths": wavelengths}
+        # int32 nm for parity with the cu3s reader + the channel selectors' wavelengths port.
+        return {"cube": cube, "wavelengths": wavelengths.astype(np.int32)}
 
     @staticmethod
     def _to_hwc(raw: np.ndarray, axes: str, path: Path) -> np.ndarray:

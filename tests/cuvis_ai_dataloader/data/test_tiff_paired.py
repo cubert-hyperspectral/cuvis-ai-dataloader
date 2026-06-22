@@ -114,6 +114,9 @@ def test_tiff_reader_yxs_and_yx(tmp_path):
     reader = TiffCubeReader(wavelengths_override=[400.0, 410.0, 420.0])
     out = reader.read(p1)
     assert out["cube"].shape == (8, 6, 3)
+    # Wavelengths are emitted as int32 nm (parity with cu3s + the channel selectors).
+    assert out["wavelengths"].dtype == np.int32
+    assert out["wavelengths"].tolist() == [400, 410, 420]
     # YX (grayscale) -> (H, W, 1)
     yx = (np.random.default_rng(0).random((8, 6)) * 255).astype(np.float32)
     p2 = tmp_path / "yx.tif"
