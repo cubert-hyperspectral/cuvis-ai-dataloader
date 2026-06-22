@@ -2,12 +2,14 @@
 
 ## [Unreleased]
 
+- **Breaking:** removed the `SingleCu3sDataModule` / `SingleCu3sDataset` back-compat aliases (and the internal `_Cu3sDataset` they were built on). Use `Cu3sDataModule` directly: `cu3s_file_path=` for a single cube or `data_dir=` for a folder of cubes. For the former single-frame dataset access, use `Cu3sDataModule(...).setup("predict")` then `predict_ds`.
+
 ## 0.1.0 - 2026-06-19
 
 - Requires `cuvis-ai-core>=0.8.0` and `cuvis-ai-schemas>=0.6.0`, consumed from PyPI; the local development wiring is removed.
 - Added the initial release: pluggable hyperspectral DataModules on cuvis-ai-core's SDK-free `BaseCuvisAIDataModule`, each declared in `configs/plugins/cuvis_ai_dataloader.yaml` as a `kind: data_module` entry with its `data_module_name` and pip `extras`. The `cuvis` SDK lives only here, behind `[cu3s]`.
 - Added `Cu3sDataModule` (`cu3s`, `[cu3s, coco]`): reads `.cu3s` cubes via the `cuvis` SDK with COCO-derived masks. Refactor of core's former `SingleCu3sDataModule`, preserving its public surface (`cu3s_file_path`, `annotation_json_path`, `processing_mode`, `measurement_indices`, sibling `<stem>.json` auto-discovery); ships `SingleCu3sDataModule` / `SingleCu3sDataset` back-compat aliases (import-path-only migration).
-- Added `TiffPairedDataModule` (`tiff_paired`, `[tiff]`): reads a directory of TIFF cubes (axes SYX / YXS / YX) via `tifffile`, parses wavelengths from the GDAL_METADATA ENVI tag, and pairs stem-keyed PNG labels (default `label_rgb`).
+- Added `TiffPairedDataModule` (`tiff_paired`, `[tiff]`): reads a directory of TIFF cubes (axes SYX / YXS / YX) via `tifffile`, parses wavelengths from the GDAL_METADATA ENVI tag (emitted as `int32` nm for parity with the cu3s reader and the channel selectors), and pairs stem-keyed PNG labels (default `label_rgb`).
 - Added `MultiCu3sDataModule` (`cu3s_multi`, `[cu3s, coco]`): multi-file cu3s driven by a CSV split column (`split, cu3s_path, annotation_json, image_id`) with per-day COCO JSONs. Runs module-owned (the CSV `split`, `DataConfig.splits = None`) or selector-driven (the CSV rows are the `enumerate()` universe); checks `read_index < total_measurements` at build.
 - Added the selector model and universe enumeration: each module implements `enumerate(required_attrs)` (attributed `SampleRef`s with a `uid` derived from source and read index, canonical order, attributes materialized only when a `tag` / `categories` selector needs them) and `build_dataset_from_refs(refs)`. Readers are cached per source, so single-file mode opens one SDK session and folder mode stays a glob at setup.
 - Added attribute labelers: `CocoLabeler` gains `is_annotated` / `categories_for`; `PairedPngLabeler` derives `category_ids` from PNG mask values, so `tag` / `categories` / AD-aware splits work for tiff too.

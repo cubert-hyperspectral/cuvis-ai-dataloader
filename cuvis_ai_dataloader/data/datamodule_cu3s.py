@@ -6,15 +6,14 @@ plumbing lives in ``BaseCuvisAIDataModule``; cube reading is the internal
 
 Selector path: ``enumerate()`` lists the attributed measurement universe (single-file mode:
 one ref per measurement; folder mode: one ref per file at measurement 0), and
-``build_dataset_from_refs`` reads exactly the resolved subset. A back-compat
-``SingleCu3sDataModule`` alias and a ``SingleCu3sDataset`` shim keep old call sites working.
+``build_dataset_from_refs`` reads exactly the resolved subset.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, ClassVar, Sequence
+from typing import Any, ClassVar
 
 from torch.utils.data import Dataset
 
@@ -34,67 +33,6 @@ def _sibling_json(annotation_json_path, cu3s_file_path) -> str | None:
         if sib.exists():
             return str(sib)
     return None
-
-
-class _Cu3sDataset(Dataset):
-    """Torch Dataset over a list of cu3s measurement indices (+ optional masks).
-
-    Retained for the ``SingleCu3sDataset`` back-compat shim; the DataModule itself uses
-    ``_Cu3sRefDataset`` over resolved ``SampleRef``s.
-    """
-
-    def __init__(
-        self,
-        cu3s_file_path: str,
-        mesu_indices: Sequence[int] | None,
-        *,
-        processing_mode: str = "Reflectance",
-        annotation_json_path: str | None = None,
-    ) -> None:
-        self._cu3s_file_path = str(cu3s_file_path)
-        self._processing_mode = processing_mode
-        self._annotation_json_path = annotation_json_path
-        if mesu_indices is None:
-            reader = Cu3sCubeReader(self._cu3s_file_path, processing_mode=processing_mode)
-            try:
-                mesu_indices = range(reader.total_measurements)
-            finally:
-                reader.close()
-        self._mesu_indices = [int(i) for i in mesu_indices]
-        # Opened lazily in __getitem__ so the dataset stays picklable for DataLoader workers.
-        self._reader: Cu3sCubeReader | None = None
-        self._labeler: Any = None
-
-    def __getstate__(self) -> dict:
-        state = self.__dict__.copy()
-        state["_reader"] = None
-        state["_labeler"] = None
-        return state
-
-    def _get_reader(self) -> Cu3sCubeReader:
-        if self._reader is None:
-            self._reader = Cu3sCubeReader(
-                self._cu3s_file_path, processing_mode=self._processing_mode
-            )
-        return self._reader
-
-    def _get_labeler(self):
-        if self._labeler is None and self._annotation_json_path:
-            from .labelers.coco_labeler import CocoLabeler
-
-            self._labeler = CocoLabeler(self._annotation_json_path)
-        return self._labeler
-
-    def __len__(self) -> int:
-        return len(self._mesu_indices)
-
-    def __getitem__(self, idx: int) -> dict:
-        mesu_index = self._mesu_indices[idx]
-        item = self._get_reader().read(mesu_index)
-        labeler = self._get_labeler()
-        if labeler is not None:
-            item.update(labeler.load_for(mesu_index, item))
-        return item
 
 
 class _Cu3sRefDataset(Dataset):
@@ -347,26 +285,3 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         """Module-owned path (no splits): every stage iterates the whole configured universe."""
         # All measurements (single-file) or every file (folder mode).
         return self.build_dataset_from_refs(self.enumerate())
-
-
-class SingleCu3sDataset(_Cu3sDataset):
-    """Back-compat shim matching the former core ``SingleCu3sDataset`` signature."""
-
-    def __init__(
-        self,
-        cu3s_file_path: str,
-        annotation_json_path: str | None = None,
-        processing_mode: str | None = "Raw",
-        measurement_indices: Sequence[int] | None = None,
-        normalize_to_unit: bool = False,
-    ) -> None:
-        super().__init__(
-            cu3s_file_path,
-            measurement_indices,
-            processing_mode=processing_mode or "Raw",
-            annotation_json_path=_sibling_json(annotation_json_path, cu3s_file_path),
-        )
-
-
-# Back-compat alias: the former core class name maps onto the plugin module.
-SingleCu3sDataModule = Cu3sDataModule

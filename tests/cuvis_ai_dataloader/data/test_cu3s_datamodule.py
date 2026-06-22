@@ -7,7 +7,6 @@ import pytest
 import torch
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
-from cuvis_ai_dataloader.data import SingleCu3sDataModule, SingleCu3sDataset
 from cuvis_ai_dataloader.data.datamodule_cu3s import Cu3sDataModule
 from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
 
@@ -37,7 +36,6 @@ def _dir(ids):
 def test_data_module_name_and_subclass():
     assert Cu3sDataModule.DATA_MODULE_NAME == "cu3s"
     assert issubclass(Cu3sDataModule, BaseCuvisAIDataModule)
-    assert SingleCu3sDataModule is Cu3sDataModule  # back-compat alias
 
 
 def test_validate_params_requires_cu3s_path():
@@ -135,8 +133,10 @@ def test_nested_cfg_data_construction(mock_cuvis_sdk, tmp_path):
     assert len(dm._predict_ds) == 7
 
 
-def test_single_cu3s_dataset_shim(mock_cuvis_sdk, tmp_path):
-    ds = SingleCu3sDataset(_make_cu3s(tmp_path), measurement_indices=[0, 2, 4])
+def test_predict_dataset_with_measurement_indices(mock_cuvis_sdk, tmp_path):
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), measurement_indices=[0, 2, 4])
+    dm.setup(stage="predict")
+    ds = dm.predict_ds
     assert len(ds) == 3
     item = ds[0]
     assert item["mesu_index"] == 0
