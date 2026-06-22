@@ -10,7 +10,8 @@ Two ways to run:
   ``split`` column via ``build_stage_dataset``.
 * **Selector-driven** (``DataConfig.splits`` set): the CSV rows are the ``enumerate()``
   universe and selectors (or a ``splits.json`` produced by ``resolve-splits --from-csv``)
-  pick subsets. Each row is a first-class ``SampleRef`` with a content-derived ``uid``.
+  pick subsets. Each row is a first-class ``SampleRef`` with a ``uid`` derived from its source
+  and read index.
 """
 
 from __future__ import annotations
@@ -111,6 +112,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
+        """Validate that a ``splits_csv`` path is given, ends in ``.csv``, and exists."""
         csv_path = params.get("splits_csv")
         if not csv_path:
             raise ValueError("cu3s_multi requires 'splits_csv' in params.")
@@ -121,14 +123,15 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
 
     # -- module-owned path -----------------------------------------------------
     def build_stage_dataset(self, stage: str) -> Dataset:
-        # DataConfig.splits is None: map the lightning stage to a CSV split (predict honors
-        # --data-arg split, default test).
+        """Module-owned path: map the Lightning stage to the matching CSV ``split`` rows."""
+        # DataConfig.splits is None: predict honors --data-arg split (default test).
         split = (self._predict_split or "test") if stage == "predict" else stage
         rows = [r for r in self._rows if split == "all" or r["split"] == split]
         return self._make_dataset(rows)
 
     # -- selector path ---------------------------------------------------------
     def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
+        """List the CSV rows as the attributed sample universe (one ref per row)."""
         labelers: dict[str, Any] = {}
 
         def attrs(ann: str | None, image_id: int) -> tuple[list[str], list[int]]:
@@ -168,6 +171,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         return refs
 
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
+        """Build the dataset for the resolved subset, one row per ``SampleRef``."""
         rows = []
         for i, ref in enumerate(refs):
             read_index = int(ref.index if ref.index is not None else 0)
@@ -184,6 +188,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         return self._make_dataset(rows)
 
     def category_name_to_id(self) -> dict[str, int] | None:
+        """Map COCO category names to ids from the first annotated row, or None if unlabeled."""
         for rec in self._rows:
             ann = rec["annotation_json"]
             if ann:

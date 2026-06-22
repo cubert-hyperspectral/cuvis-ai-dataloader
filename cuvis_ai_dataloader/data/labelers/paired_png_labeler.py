@@ -50,6 +50,7 @@ class PairedPngLabeler:
         return [1] if arr.any() else []
 
     def load_for(self, stem: str, cube_hw: tuple[int, int]) -> dict:
+        """Load ``<stem>.png``, resize to the cube's (H, W), return it under the output key."""
         from PIL import Image
 
         png_path = self.labels_dir / f"{stem}.png"

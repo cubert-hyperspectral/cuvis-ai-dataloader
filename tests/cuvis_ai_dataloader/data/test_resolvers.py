@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from cuvis_ai_core.data.splits_io import load_splits
 from cuvis_ai_schemas.training.data import SampleRef, SelectorKind
 
@@ -87,6 +89,32 @@ def test_resolve_stratified_keeps_both_classes():
     train = _ids_in(cfg.train, "a.cu3s")
     # stratified: train keeps a mix of normal (5..9) and anomalous (0..4)
     assert any(i < 5 for i in train) and any(i >= 5 for i in train)
+
+
+def test_resolve_stratified_group_by_keeps_mixed_file_whole():
+    # Each file holds one normal + one anomalous sample. group_by="source" must keep a file
+    # wholly in one stage even though stratification partitions by class.
+    refs = [
+        SampleRef(source="a.cu3s", index=0, label_id=0),
+        SampleRef(source="a.cu3s", index=1, label_id=1, category_ids=[1]),
+        SampleRef(source="b.cu3s", index=0, label_id=0),
+        SampleRef(source="b.cu3s", index=1, label_id=1, category_ids=[1]),
+    ]
+    cfg = resolve_stratified(refs, val_ratio=0.0, test_ratio=0.5, seed=0, group_by="source")
+    train_sources = {s.source for s in cfg.train}
+    test_sources = {s.source for s in cfg.test}
+    assert train_sources and test_sources
+    assert train_sources.isdisjoint(test_sources)  # no file split across stages
+
+
+def test_resolve_rejects_ambiguous_read_index():
+    # One read index carrying two label_ids can't be addressed by a FILE_INDICES selector.
+    refs = [
+        SampleRef(source="x.cu3s", index=0, label_id=3),
+        SampleRef(source="x.cu3s", index=0, label_id=7),
+    ]
+    with pytest.raises(ValueError, match="index-addressable"):
+        resolve_random(refs)
 
 
 def test_resolve_splits_cli_from_csv(tmp_path, monkeypatch):

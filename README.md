@@ -55,7 +55,7 @@ uv pip install "cuvis-ai-dataloader[all]"          # every format
 ```
 
 Extras:
-- `cu3s`: `.cu3s` / `.cu3` reading via the `cuvis` SDK binding
+- `cu3s`: `.cu3s` session reading via the `cuvis` SDK binding
 - `coco`: COCO-JSON mask labels (`pycocotools`, `scikit-image`)
 - `tiff`: TIFF cube reading (`tifffile`)
 - `all`: All formats
@@ -68,10 +68,10 @@ The `cu3s` extra carries the Windows `cuvis-il<3.5.3` pin (the last build with a
 
 The `[cu3s]` extra installs the `cuvis` Python package, but that is only a
 binding: the **C++ Cuvis SDK** must also be installed system-wide, or any
-`.cu3s` / `.cu3` read fails at runtime.
+`.cu3s` read fails at runtime.
 
 > **macOS not supported.** Cuvis SDK ships for Windows and Linux only. On macOS,
-> `.cu3s` / `.cu3` reads fail at runtime; the `tiff_paired` module and any
+> `.cu3s` reads fail at runtime; the `tiff_paired` module and any
 > numpy / video input still work.
 
 Obtain a build matching the `cuvis>=3.5.0` pin for your OS from the
@@ -146,6 +146,21 @@ uv run ruff check cuvis_ai_dataloader/ tests/
 uv run ruff format cuvis_ai_dataloader/ tests/
 uv run mypy cuvis_ai_dataloader/
 ```
+
+### Git hooks
+
+Enable the repo's hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- **pre-commit**: `ruff format` + `ruff check --fix` on staged Python, then re-stages.
+- **pre-push**: `ruff format --check`, `ruff check`, docstring coverage
+  (`uvx interrogate`, ≥95%, configured in `[tool.interrogate]`), and
+  `pytest -m "not slow and not gpu"`.
+
+Skip a hook for one command with `--no-verify`.
 
 ## Contributing
 

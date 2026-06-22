@@ -36,7 +36,7 @@ class Cu3sCubeReader:
         except Exception:
             self.fps = None
 
-        self._apply_processing_mode(cuvis, processing_mode)
+        self._processing_applied = self._apply_processing_mode(cuvis, processing_mode)
 
         mesu0 = self.session.get_measurement(0)
         self.num_channels = mesu0.cube.channels
@@ -47,9 +47,14 @@ class Cu3sCubeReader:
             f"{self.num_channels} channels"
         )
 
-    def _apply_processing_mode(self, cuvis, processing_mode) -> None:
+    def _apply_processing_mode(self, cuvis, processing_mode) -> bool:
+        """Configure the processing context for ``processing_mode``.
+
+        Returns ``True`` when a mode was set, so ``read`` knows to always apply it rather than
+        trusting a possibly-raw cube already present in the measurement.
+        """
         if processing_mode is None:
-            return
+            return False
         if isinstance(processing_mode, str):
             resolved = getattr(cuvis.ProcessingMode, processing_mode, None)
             if resolved is None:
@@ -76,16 +81,21 @@ class Cu3sCubeReader:
                 "SpectralRadiance processing mode requires a Dark reference in the cu3s file."
             )
         self.pc.processing_mode = processing_mode
+        return True
 
     @property
     def wavelengths_nm(self) -> np.ndarray:
+        """Per-channel wavelengths (nm, int32) from the first measurement."""
         mesu = self.session.get_measurement(0)
         return np.array(mesu.cube.wavelength, dtype=np.int32).ravel()
 
     def read(self, mesu_index: int) -> dict:
         """Return ``{"cube", "mesu_index", "wavelengths"}`` for one measurement."""
         mesu = self.session.get_measurement(mesu_index)
-        if "cube" not in mesu.data:
+        # A requested processing mode is always applied: a cube already present in mesu.data may
+        # be the recorded (raw) cube, so trusting it would silently bypass the requested mode.
+        # With no mode set (processing_mode=None) the file's data is used as-is unless absent.
+        if self._processing_applied or "cube" not in mesu.data:
             mesu = self.pc.apply(mesu)
         cube_array: np.ndarray = mesu.cube.array
         wavelengths = np.array(mesu.cube.wavelength, dtype=np.int32).ravel()

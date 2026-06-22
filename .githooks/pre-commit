@@ -1,0 +1,34 @@
+#!/bin/bash
+# Pre-commit hook: fast checks (format + lint-fix on staged Python, then re-stage).
+# Skip with: git commit --no-verify
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+set -e
+
+# Unset GIT_DIR/GIT_WORK_TREE so uv's internal git fetches don't inherit the hook's
+# git context, and VIRTUAL_ENV so uv reconciles THIS repo's venv (not a sibling's).
+unset GIT_DIR GIT_WORK_TREE VIRTUAL_ENV
+
+STAGED=$(git diff --name-only --cached --diff-filter=ACM)
+STAGED_PY=$(echo "$STAGED" | grep -E '\.py$' || true)
+[ -z "$STAGED_PY" ] && exit 0
+
+echo "→ Ruff format..."
+if ! uv run --no-sync ruff format cuvis_ai_dataloader/ tests/; then
+    echo "✗ Ruff format failed (is the env set up? run: uv sync --extra dev)."
+    exit 1
+fi
+
+echo "→ Ruff check --fix..."
+if ! uv run --no-sync ruff check --fix cuvis_ai_dataloader/ tests/; then
+    echo "✗ Ruff lint failed. Fix the errors above and re-commit."
+    exit 1
+fi
+
+# Re-stage only the files that were originally staged (ruff may have reformatted them).
+echo "$STAGED_PY" | while read -r f; do
+    [ -f "$f" ] && git add "$f"
+done
+
+echo "✓ Pre-commit checks passed."
+exit 0

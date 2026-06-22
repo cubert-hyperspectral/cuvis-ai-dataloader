@@ -34,6 +34,7 @@ class TiffCubeReader:
         )
 
     def read(self, path: str | Path) -> dict:
+        """Read ``path`` into ``{"cube": (H, W, C) float32, "wavelengths": float32[C]}``."""
         tifffile = require_tifffile()
         path = Path(path)
         with tifffile.TiffFile(str(path)) as tf:

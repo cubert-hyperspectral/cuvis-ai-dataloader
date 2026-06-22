@@ -115,3 +115,14 @@ exclude = ["tests", "build", "dist"]
 [tool.bandit]
 exclude_dirs = ["tests"]
 skips = ["B101"]  # assert_used: asserts are fine in this codebase
+
+# Docstring-coverage gate for the pre-push hook (run via `uvx interrogate`, so it stays out
+# of the locked dependency set and the torch cu128 pins).
+[tool.interrogate]
+ignore-init-method = true
+ignore-magic = true
+ignore-private = true
+ignore-semiprivate = true
+ignore-nested-functions = true
+fail-under = 95
+exclude = ["tests", "build", "dist"]

@@ -51,24 +51,49 @@ class _Cu3sDataset(Dataset):
         processing_mode: str = "Reflectance",
         annotation_json_path: str | None = None,
     ) -> None:
-        self._reader = Cu3sCubeReader(cu3s_file_path, processing_mode=processing_mode)
+        self._cu3s_file_path = str(cu3s_file_path)
+        self._processing_mode = processing_mode
+        self._annotation_json_path = annotation_json_path
         if mesu_indices is None:
-            mesu_indices = range(self._reader.total_measurements)
+            reader = Cu3sCubeReader(self._cu3s_file_path, processing_mode=processing_mode)
+            try:
+                mesu_indices = range(reader.total_measurements)
+            finally:
+                reader.close()
         self._mesu_indices = [int(i) for i in mesu_indices]
-        self._labeler = None
-        if annotation_json_path:
+        # Opened lazily in __getitem__ so the dataset stays picklable for DataLoader workers.
+        self._reader: Cu3sCubeReader | None = None
+        self._labeler: Any = None
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["_reader"] = None
+        state["_labeler"] = None
+        return state
+
+    def _get_reader(self) -> Cu3sCubeReader:
+        if self._reader is None:
+            self._reader = Cu3sCubeReader(
+                self._cu3s_file_path, processing_mode=self._processing_mode
+            )
+        return self._reader
+
+    def _get_labeler(self):
+        if self._labeler is None and self._annotation_json_path:
             from .labelers.coco_labeler import CocoLabeler
 
-            self._labeler = CocoLabeler(annotation_json_path)
+            self._labeler = CocoLabeler(self._annotation_json_path)
+        return self._labeler
 
     def __len__(self) -> int:
         return len(self._mesu_indices)
 
     def __getitem__(self, idx: int) -> dict:
         mesu_index = self._mesu_indices[idx]
-        item = self._reader.read(mesu_index)
-        if self._labeler is not None:
-            item.update(self._labeler.load_for(mesu_index, item))
+        item = self._get_reader().read(mesu_index)
+        labeler = self._get_labeler()
+        if labeler is not None:
+            item.update(labeler.load_for(mesu_index, item))
         return item
 
 
@@ -190,6 +215,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
+        """Validate cu3s params: a file (or folder) source exists and any annotation is JSON."""
         cu3s = params.get("cu3s_file_path")
         data_dir = params.get("data_dir")
         dataset_name = params.get("dataset_name")
@@ -256,6 +282,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         return tags, (cats if "category_ids" in required else [])
 
     def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
+        """List the attributed sample universe (one ref per measurement, or per folder file)."""
         refs: list[SampleRef] = []
         if self.data_dir is not None:
             for path in self._list_folder_files():
@@ -302,9 +329,11 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         return refs
 
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
+        """Build the torch Dataset reading exactly the resolved ``SampleRef`` subset."""
         return _Cu3sRefDataset(refs, self.processing_mode)
 
     def category_name_to_id(self) -> dict[str, int] | None:
+        """Map COCO category names to ids (from the annotation), or None when unlabeled."""
         annotation = self.annotation_json_path
         if annotation is None and self.data_dir is not None:
             files = self._list_folder_files()
@@ -315,8 +344,8 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         return {name: cid for cid, name in labeler.category_id_to_name.items()}
 
     def build_stage_dataset(self, stage: str) -> Dataset:
-        # DataConfig.splits is None (the inference case): every stage iterates the whole
-        # configured universe (all measurements, or every file in folder mode).
+        """Module-owned path (no splits): every stage iterates the whole configured universe."""
+        # All measurements (single-file) or every file (folder mode).
         return self.build_dataset_from_refs(self.enumerate())
 
 

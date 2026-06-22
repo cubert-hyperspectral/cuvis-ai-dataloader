@@ -95,6 +95,7 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
+        """Validate that ``images_dir`` exists with TIFFs, and any ``labels_dir`` holds PNGs."""
         images_dir = params.get("images_dir")
         if not images_dir:
             raise ValueError("tiff_paired requires 'images_dir' in params.")
@@ -137,6 +138,7 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
         )
 
     def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
+        """List one attributed ref per TIFF file (paired PNG sets the annotation when present)."""
         labeler = self._labeler() if (required_attrs & {"tags", "category_ids"}) else None
         refs: list[SampleRef] = []
         for path in self._list_files():
@@ -167,10 +169,12 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
         return refs
 
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
+        """Build the torch Dataset reading the resolved TIFF files (+ paired PNGs)."""
         reader = TiffCubeReader(wavelengths_override=self.wavelengths_override)
         return _TiffPairedRefDataset(refs, reader=reader, labeler=self._labeler())
 
     def category_name_to_id(self) -> dict[str, int] | None:
+        """Map label category names to ids (binary normal/anomalous, or label-map values)."""
         if not self.labels_dir:
             return None
         if self.label_mode != "label_map":
@@ -183,5 +187,5 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
         return names or None
 
     def build_stage_dataset(self, stage: str) -> Dataset:
-        # DataConfig.splits is None (inference): iterate every TIFF file.
+        """Module-owned path (no splits): every stage iterates every TIFF file."""
         return self.build_dataset_from_refs(self.enumerate())

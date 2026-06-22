@@ -1,3 +1,9 @@
+"""COCO label parsing + rasterization. Not a plugin contract.
+
+A typed view over a ``pycocotools`` COCO file (``COCOData``) plus the ``CocoLabeler`` used
+by the cu3s DataModules to turn per-image annotations into category-id masks.
+"""
+
 import contextlib
 import io
 import json
@@ -52,6 +58,8 @@ class SafeWizard(JSONWizard):
 
 @dataclass
 class Info(JSONWizard):
+    """COCO ``info`` block: free-form dataset description / version metadata."""
+
     description: str | None = None
     url: str | None = None
     version: int | None = None
@@ -61,6 +69,8 @@ class Info(JSONWizard):
 
 @dataclass
 class License(JSONWizard):
+    """COCO ``license`` entry."""
+
     id: int
     name: str
     url: str | None = None
@@ -68,6 +78,8 @@ class License(JSONWizard):
 
 @dataclass
 class Category(JSONWizard):
+    """COCO ``category``: id, name, and optional supercategory."""
+
     id: int
     name: str
     supercategory: str | None = None
@@ -75,6 +87,8 @@ class Category(JSONWizard):
 
 @dataclass
 class Image(JSONWizard):
+    """COCO ``image`` record: id, file name, size, and optional per-band wavelengths."""
+
     id: int
     file_name: str
     height: int
@@ -88,6 +102,8 @@ class Image(JSONWizard):
 
 @dataclass
 class Annotation(SafeWizard):
+    """COCO ``annotation``: bbox / polygon / RLE mask for one image and category."""
+
     id: int
     image_id: int
     category_id: int
@@ -131,6 +147,8 @@ class Annotation(SafeWizard):
 
 
 class QueryableList:
+    """A list wrapper with a ``where(**conditions)`` attribute-equality filter."""
+
     def __init__(self, items: list[Any]) -> None:
         self._items = items
 
@@ -156,6 +174,8 @@ class QueryableList:
 
 
 class COCOData:
+    """A typed, lazily-parsed view over a ``pycocotools`` ``COCO`` object."""
+
     def __init__(self, coco: COCO) -> None:
         self._coco = coco
         self._image_ids: list[int] | None = None
@@ -166,25 +186,30 @@ class COCOData:
 
     @classmethod
     def from_path(cls, path: Path | str):
+        """Load a COCO JSON from ``path`` (suppressing pycocotools' stdout noise)."""
         with contextlib.redirect_stdout(io.StringIO()):
             return cls(COCO(path))
 
     @property
     def image_ids(self) -> list[int]:
+        """Sorted list of COCO image ids."""
         if self._image_ids is None:
             self._image_ids = sorted(self._coco.imgs.keys())
         return self._image_ids
 
     @property
     def info(self) -> Info:
+        """COCO ``info`` block."""
         return Info.from_dict(self._coco.dataset["info"])
 
     @property
     def license(self) -> License:
+        """First COCO ``license`` entry."""
         return License.from_dict(self._coco.dataset["licenses"][0])
 
     @property
     def annotations(self) -> QueryableList:
+        """All annotations as a queryable list."""
         if self._annotations is None:
             self._annotations = QueryableList(
                 [Annotation.from_dict(v) for v in self._coco.anns.values()]
@@ -193,18 +218,21 @@ class COCOData:
 
     @property
     def categories(self) -> list[Category]:
+        """COCO categories."""
         if self._categories is None:
             self._categories = [Category.from_dict(v) for v in self._coco.cats.values()]
         return self._categories
 
     @property
     def category_id_to_name(self) -> dict[int, str]:
+        """Mapping of category id to category name."""
         if self._category_id_to_name is None:
             self._category_id_to_name = {cat.id: cat.name for cat in self.categories}
         return self._category_id_to_name
 
     @property
     def images(self) -> list[Image]:
+        """COCO image records."""
         if self._images is None:
             self._images = [Image.from_dict(v) for v in self._coco.imgs.values()]
         return self._images

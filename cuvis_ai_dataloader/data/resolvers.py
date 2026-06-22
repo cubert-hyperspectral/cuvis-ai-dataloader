@@ -13,9 +13,39 @@ from collections import OrderedDict
 from typing import TYPE_CHECKING
 
 from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
+from loguru import logger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Iterable
+
     from cuvis_ai_schemas.training.data import SampleRef
+
+
+def _assert_index_addressable(triples: Iterable[tuple[str, int | None, int | None]]) -> None:
+    """Refuse a universe a FILE_INDICES split can't address unambiguously.
+
+    FILE_INDICES selectors pick a sample by ``(source, read index)``, so a read index that
+    carries more than one ``label_id`` can't be split cleanly: core's leakage check would later
+    fail the split (or, with leakage disabled, silently put the same read in two stages). Catch
+    it here with a clear message. ``triples`` is ``(source, index, label_id)``; index-less
+    samples (whole-file) are skipped.
+    """
+    labels_by_key: dict[tuple[str, int], set] = {}
+    for source, index, label_id in triples:
+        if index is None:
+            continue
+        labels_by_key.setdefault((source, index), set()).add(label_id)
+    ambiguous = {key: labels for key, labels in labels_by_key.items() if len(labels) > 1}
+    if ambiguous:
+        examples = "; ".join(
+            f"{src}#{idx} -> label_ids {sorted(labels)}"
+            for (src, idx), labels in list(ambiguous.items())[:3]
+        )
+        raise ValueError(
+            "universe is not index-addressable: a read index carries multiple label_ids, which "
+            f"FILE_INDICES selectors can't split unambiguously ({examples}). Give each sample a "
+            "distinct read index, or split via the cu3s_multi CSV 'split' column."
+        )
 
 
 def selectors_from_refs(refs: list[SampleRef]) -> list[Selector]:
@@ -55,6 +85,7 @@ def resolve_random(
     ad_aware: bool = False,
 ) -> DataSplitConfig:
     """Random split (seeded, reproducible). ``group_by`` keeps a file's samples together."""
+    _assert_index_addressable((r.source, r.index, r.label_id) for r in refs)
     groups = _groups(refs, group_by)
     random.Random(seed).shuffle(groups)
     n = len(groups)
@@ -89,6 +120,7 @@ def resolve_stratified(
     stratified as anomalous when any of its refs carries a category, else normal. (With
     ``group_by=None`` every ref is its own group, i.e. per-sample stratification.)
     """
+    _assert_index_addressable((r.source, r.index, r.label_id) for r in refs)
     train: list[SampleRef] = []
     val: list[SampleRef] = []
     test: list[SampleRef] = []
@@ -112,6 +144,12 @@ def resolve_stratified(
         train += flat(stratum[n_test + n_val :])
     if ad_aware:
         train = [ref for ref in train if not ref.category_ids]
+    if ad_aware and anomalous_groups and not any(r.category_ids for r in (val + test)):
+        logger.warning(
+            "stratified ad_aware split: {} anomalous group(s) but val/test received no anomalous "
+            "samples (dataset too small to stratify); evaluation has no anomaly coverage.",
+            len(anomalous_groups),
+        )
     return _to_config(train, val, test)
 
 
@@ -121,6 +159,10 @@ def import_csv_splits(module) -> DataSplitConfig:
     Groups each stage's rows by source into FILE_INDICES selectors (sorted, deduped),
     outcome-equivalent to the CSV (same rows per stage), in canonical order.
     """
+    _assert_index_addressable(
+        (rec["cu3s_path"], int(rec["read_index"]), int(rec["image_id"]))
+        for rec in module._rows  # noqa: SLF001 - same package, intentional
+    )
     stage_pairs: dict[str, list[tuple[str, int]]] = {"train": [], "val": [], "test": []}
     for rec in module._rows:  # noqa: SLF001 - same package, intentional
         split = rec["split"]
