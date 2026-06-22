@@ -1,4 +1,5 @@
 import contextlib
+import io
 import json
 from collections.abc import Iterable, Iterator
 from copy import copy
@@ -9,14 +10,10 @@ from typing import Any
 import numpy as np
 import torch
 from dataclass_wizard import JSONWizard
+from loguru import logger
 from pycocotools.coco import COCO
 from skimage.draw import polygon2mask
 from torchvision.tv_tensors import BoundingBoxes, Mask
-
-import io
-
-# from contextlib import contextmanager
-
 
 from cuvis_ai_core.data.rle import decode_rle_mask_for_canvas
 
@@ -101,30 +98,6 @@ class Annotation(SafeWizard):
     iscrowd: int | None = 0
     auxiliary: dict[str, Any] | None = field(default_factory=dict)
 
-    def to_dict_safe(self) -> dict[str, Any]:
-        """
-        Like `to_dict()`, but leaves unsupported types untouched.
-        """
-        base_dict = super().to_dict()
-        final_dict = {}
-
-        for key, value in vars(self).items():
-            if not self._is_json_serializable(value):
-                # keep original object (Mask, Tensor, etc.)
-                final_dict[key] = value
-                continue
-            val = base_dict.get(key, value)
-            final_dict[key] = val
-        return final_dict
-
-    @staticmethod
-    def _is_json_serializable(obj):
-        try:
-            json.dumps(obj)
-            return True
-        except Exception:
-            return False
-
     def to_torchvision(self, size: tuple[int, int]) -> dict[str, Any]:
         """Convert COCO-style bbox/segmentation/mask into torchvision tensors."""
         out = copy(self)
@@ -155,7 +128,6 @@ class Annotation(SafeWizard):
             out.mask = Mask(torch.from_numpy(mask_np))
 
         return out.to_dict_safe()
-        # return out
 
 
 class QueryableList:
@@ -196,15 +168,6 @@ class COCOData:
     def from_path(cls, path: Path | str):
         with contextlib.redirect_stdout(io.StringIO()):
             return cls(COCO(path))
-
-    # @classmethod
-    # def from_path(cls, path):
-    #     old_print = builtins.print
-    #     builtins.print = lambda *a, **k: None
-    #     try:
-    #         return cls(COCO(str(path)))
-    #     finally:
-    #         builtins.print = old_print
 
     @property
     def image_ids(self) -> list[int]:
@@ -277,7 +240,7 @@ class COCOData:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(dataset, f, indent=2)
 
-        print(f"COCOData saved successfully to: {path}")
+        logger.debug(f"COCOData saved to: {path}")
 
 
 def create_mask(

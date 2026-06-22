@@ -22,12 +22,10 @@ class Cu3sCubeReader:
     def __init__(self, cu3s_file_path: str, *, processing_mode: str | None = "Reflectance") -> None:
         cuvis = require_cuvis()
         self.cu3s_file_path = str(cu3s_file_path)
-        assert os.path.exists(self.cu3s_file_path), (
-            f"cu3s path does not exist: {self.cu3s_file_path}"
-        )
-        assert Path(self.cu3s_file_path).suffix == ".cu3s", (
-            f"path must point to a .cu3s file: {self.cu3s_file_path}"
-        )
+        if not os.path.exists(self.cu3s_file_path):
+            raise ValueError(f"cu3s path does not exist: {self.cu3s_file_path}")
+        if Path(self.cu3s_file_path).suffix != ".cu3s":
+            raise ValueError(f"path must point to a .cu3s file: {self.cu3s_file_path}")
 
         self.session = cuvis.SessionFile(self.cu3s_file_path)
         self.pc = cuvis.ProcessingContext(self.session)
@@ -53,19 +51,28 @@ class Cu3sCubeReader:
         if processing_mode is None:
             return
         if isinstance(processing_mode, str):
-            processing_mode = getattr(
-                cuvis.ProcessingMode, processing_mode, cuvis.ProcessingMode.Raw
-            )
+            resolved = getattr(cuvis.ProcessingMode, processing_mode, None)
+            if resolved is None:
+                raise ValueError(
+                    f"unknown processing_mode {processing_mode!r}; "
+                    "expected a cuvis.ProcessingMode name (e.g. 'Raw', 'Reflectance', "
+                    "'SpectralRadiance')."
+                )
+            processing_mode = resolved
         has_white = self.session.get_reference(0, cuvis.ReferenceType.White) is not None
         has_dark = self.session.get_reference(0, cuvis.ReferenceType.Dark) is not None
-        if processing_mode == cuvis.ProcessingMode.Reflectance:
-            assert has_white and has_dark, (
+        if processing_mode == cuvis.ProcessingMode.Reflectance and not (has_white and has_dark):
+            raise ValueError(
                 "Reflectance processing mode requires both White and Dark references "
                 "in the cu3s file."
             )
         spectral_radiance_mode = getattr(cuvis.ProcessingMode, "SpectralRadiance", None)
-        if spectral_radiance_mode is not None and processing_mode == spectral_radiance_mode:
-            assert has_dark, (
+        if (
+            spectral_radiance_mode is not None
+            and processing_mode == spectral_radiance_mode
+            and not has_dark
+        ):
+            raise ValueError(
                 "SpectralRadiance processing mode requires a Dark reference in the cu3s file."
             )
         self.pc.processing_mode = processing_mode
@@ -87,3 +94,27 @@ class Cu3sCubeReader:
             "mesu_index": int(mesu_index),
             "wavelengths": wavelengths,
         }
+
+    def close(self) -> None:
+        """Release the SDK processing context + session (best-effort).
+
+        Drops the native handles so they don't accumulate when many sources are
+        opened (e.g. multi-file validation). Safe to call more than once.
+        """
+        for attr in ("pc", "session"):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            closer = getattr(obj, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # pragma: no cover - SDK teardown is best-effort
+                    pass
+            setattr(self, attr, None)
+
+    def __enter__(self) -> Cu3sCubeReader:
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()

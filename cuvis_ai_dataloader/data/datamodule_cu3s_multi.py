@@ -39,6 +39,14 @@ class _MultiCu3sDataset(Dataset):
         self._readers: dict[str, Cu3sCubeReader] = {}
         self._labelers: dict[str, Any] = {}
 
+    def __getstate__(self) -> dict:
+        # Drop cached SDK readers/labelers before pickling to DataLoader workers; each
+        # worker reopens its own session lazily in __getitem__ (native handles don't pickle).
+        state = self.__dict__.copy()
+        state["_readers"] = {}
+        state["_labelers"] = {}
+        return state
+
     def _reader_for(self, source: str) -> Cu3sCubeReader:
         if source not in self._readers:
             self._readers[source] = Cu3sCubeReader(source, processing_mode=self._processing_mode)
@@ -187,22 +195,33 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
 
     # -- shared dataset construction -------------------------------------------
     def _make_dataset(self, rows: list[dict[str, Any]]) -> Dataset:
-        from ._extras import require_cuvis, require_pycocotools, require_skimage_polygon2mask
+        from ._extras import require_cuvis
 
         require_cuvis()
-        require_pycocotools()
-        require_skimage_polygon2mask()
+        # COCO deps are only needed when at least one row carries an annotation.
+        if any(rec.get("annotation_json") for rec in rows):
+            from ._extras import require_pycocotools, require_skimage_polygon2mask
+
+            require_pycocotools()
+            require_skimage_polygon2mask()
         self._validate_read_indices(rows)
         return _MultiCu3sDataset(rows, self._processing_mode)
 
     def _validate_read_indices(self, rows: list[dict[str, Any]]) -> None:
-        """Fail loud at build if any row's read_index exceeds its file's measurement count."""
+        """Fail loud at build if any row's read_index is out of [0, total_measurements)."""
         max_by_source: dict[str, int] = {}
         for rec in rows:
+            read_index = int(rec["read_index"])
+            if read_index < 0:
+                raise ValueError(f"negative read_index {read_index} for {rec['cu3s_path']}")
             src = rec["cu3s_path"]
-            max_by_source[src] = max(max_by_source.get(src, -1), int(rec["read_index"]))
+            max_by_source[src] = max(max_by_source.get(src, -1), read_index)
         for src, max_ri in max_by_source.items():
-            total = Cu3sCubeReader(src, processing_mode=self._processing_mode).total_measurements
+            reader = Cu3sCubeReader(src, processing_mode=self._processing_mode)
+            try:
+                total = reader.total_measurements
+            finally:
+                reader.close()
             if max_ri >= total:
                 raise ValueError(f"row read_index {max_ri} >= {total} measurements in {src}")
 

@@ -18,10 +18,12 @@ from .datamodule_cu3s import (
     SingleCu3sDataModule,
     SingleCu3sDataset,
 )
+from .datamodule_cu3s_multi import MultiCu3sDataModule
 from .datamodule_tiff_paired import TiffPairedDataModule
 
 __all__ = [
     "Cu3sDataModule",
+    "MultiCu3sDataModule",
     "SingleCu3sDataModule",
     "SingleCu3sDataset",
     "TiffPairedDataModule",

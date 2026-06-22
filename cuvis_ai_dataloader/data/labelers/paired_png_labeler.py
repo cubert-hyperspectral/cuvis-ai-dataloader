@@ -36,17 +36,18 @@ class PairedPngLabeler:
         """Category ids for ``stem`` from the PNG mask (empty -> unannotated / normal).
 
         ``label_map`` mode returns the distinct non-zero label values; ``rgb`` mode has no
-        per-value labels, so a present PNG is reported as the single category ``1``.
+        per-value labels, so any non-zero region marks the single category ``1`` while a
+        present-but-empty (all-zero) mask is a normal sample (empty category list).
         """
         png_path = self.labels_dir / f"{stem}.png"
         if not png_path.exists():
             return []
-        if self.label_mode == "label_map":
-            from PIL import Image
+        from PIL import Image
 
-            arr = np.asarray(Image.open(png_path).convert("L"), dtype=np.uint8)
+        arr = np.asarray(Image.open(png_path).convert("L"), dtype=np.uint8)
+        if self.label_mode == "label_map":
             return sorted({int(v) for v in np.unique(arr) if int(v) != 0})
-        return [1]
+        return [1] if arr.any() else []
 
     def load_for(self, stem: str, cube_hw: tuple[int, int]) -> dict:
         from PIL import Image

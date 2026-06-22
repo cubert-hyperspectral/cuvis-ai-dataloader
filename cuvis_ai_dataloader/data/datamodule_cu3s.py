@@ -86,6 +86,14 @@ class _Cu3sRefDataset(Dataset):
         self._readers: dict[str, Cu3sCubeReader] = {}
         self._labelers: dict[str, Any] = {}
 
+    def __getstate__(self) -> dict:
+        # Drop cached SDK readers/labelers before pickling to DataLoader workers; each
+        # worker reopens its own session lazily in __getitem__ (native handles don't pickle).
+        state = self.__dict__.copy()
+        state["_readers"] = {}
+        state["_labelers"] = {}
+        return state
+
     def _reader_for(self, source: str) -> Cu3sCubeReader:
         if source not in self._readers:
             self._readers[source] = Cu3sCubeReader(source, processing_mode=self._processing_mode)
@@ -270,7 +278,10 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             indices = self.measurement_indices
             if indices is None:
                 reader = Cu3sCubeReader(source, processing_mode=self.processing_mode)
-                indices = range(reader.total_measurements)
+                try:
+                    indices = range(reader.total_measurements)
+                finally:
+                    reader.close()
             annotation = self.annotation_json_path
             stem = Path(source).stem
             for m in indices:

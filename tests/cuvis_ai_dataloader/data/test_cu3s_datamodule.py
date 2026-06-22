@@ -52,6 +52,22 @@ def test_validate_params_rejects_bad_suffix(tmp_path):
         Cu3sDataModule.validate_params({"cu3s_file_path": str(bad)})
 
 
+def test_unknown_processing_mode_raises(mock_cuvis_sdk, tmp_path):
+    import types
+
+    import cuvis  # the fake module patched into sys.modules by the fixture
+
+    from cuvis_ai_dataloader.data.readers.cu3s_reader import Cu3sCubeReader
+
+    # The real ProcessingMode is an enum where an unknown name resolves to None; a Mock would
+    # fabricate one, so swap in a namespace to exercise the unknown-mode guard.
+    cuvis.ProcessingMode = types.SimpleNamespace(
+        Raw="Raw", Reflectance="Reflectance", SpectralRadiance="SpectralRadiance"
+    )
+    with pytest.raises(ValueError, match="unknown processing_mode"):
+        Cu3sCubeReader(_make_cu3s(tmp_path), processing_mode="Reflectence")
+
+
 def test_predict_iterates_all_measurements(mock_cuvis_sdk, tmp_path):
     dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), batch_size=1)
     dm.setup(stage="predict")

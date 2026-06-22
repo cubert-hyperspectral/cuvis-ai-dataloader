@@ -83,27 +83,33 @@ def resolve_stratified(
     group_by: str | None = None,
     ad_aware: bool = False,
 ) -> DataSplitConfig:
-    """Split stratified by anomalous-vs-normal so each stage keeps the class balance."""
+    """Split stratified by anomalous-vs-normal so each stage keeps the class balance.
+
+    Grouping happens before stratification, so ``group_by`` keeps a file whole: a group is
+    stratified as anomalous when any of its refs carries a category, else normal. (With
+    ``group_by=None`` every ref is its own group, i.e. per-sample stratification.)
+    """
     train: list[SampleRef] = []
     val: list[SampleRef] = []
     test: list[SampleRef] = []
-    normal = [r for r in refs if not r.category_ids]
-    anomalous = [r for r in refs if r.category_ids]
-    for subset in (normal, anomalous):
-        if not subset:
+
+    def flat(grouped: list[list[SampleRef]]) -> list[SampleRef]:
+        return [ref for group in grouped for ref in group]
+
+    groups = _groups(refs, group_by)
+    normal_groups = [g for g in groups if not any(r.category_ids for r in g)]
+    anomalous_groups = [g for g in groups if any(r.category_ids for r in g)]
+    for stratum in (normal_groups, anomalous_groups):
+        if not stratum:
             continue
-        groups = _groups(subset, group_by)
-        random.Random(seed).shuffle(groups)
-        n = len(groups)
+        stratum = list(stratum)
+        random.Random(seed).shuffle(stratum)
+        n = len(stratum)
         n_test = int(round(n * test_ratio))
         n_val = int(round(n * val_ratio))
-
-        def flat(grouped: list[list[SampleRef]]) -> list[SampleRef]:
-            return [ref for group in grouped for ref in group]
-
-        test += flat(groups[:n_test])
-        val += flat(groups[n_test : n_test + n_val])
-        train += flat(groups[n_test + n_val :])
+        test += flat(stratum[:n_test])
+        val += flat(stratum[n_test : n_test + n_val])
+        train += flat(stratum[n_test + n_val :])
     if ad_aware:
         train = [ref for ref in train if not ref.category_ids]
     return _to_config(train, val, test)
