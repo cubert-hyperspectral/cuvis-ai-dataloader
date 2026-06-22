@@ -23,7 +23,13 @@ if ! uv run --no-sync ruff check cuvis_ai_dataloader/ tests/; then
 fi
 
 echo "→ Docstring coverage (interrogate, ≥95%)..."
-if ! uvx interrogate cuvis_ai_dataloader/; then
+# Prefer the cached tool so the gate runs offline; fetch only when it isn't cached yet.
+if uvx --offline interrogate --version >/dev/null 2>&1; then
+    _interrogate="uvx --offline interrogate"
+else
+    _interrogate="uvx interrogate"
+fi
+if ! $_interrogate cuvis_ai_dataloader/; then
     echo ""
     echo "✗ Docstring coverage below 95%. See misses:  uvx interrogate -vv cuvis_ai_dataloader/"
     echo "  (config in pyproject.toml [tool.interrogate])"
