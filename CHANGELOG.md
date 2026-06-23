@@ -5,6 +5,8 @@ uses semantic versioning.
 
 ## [Unreleased]
 
+## 0.2.0 - 2026-06-23
+
 - **DataModule constructors reject unknown keyword arguments.** `Cu3sDataModule`,
   `MultiCu3sDataModule`, and `TiffPairedDataModule` no longer end in a `**_` catch-all that
   silently dropped unrecognized kwargs. A typo or a removed option (e.g. an old `train_ids` /
