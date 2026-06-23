@@ -109,7 +109,9 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         # universe; selectors then index into it.
         glob: Any = None,
         params: dict | None = None,
-        **_: Any,
+        # Carried by the nested `cls(**cfg.data)` shape; the class identity already fixes
+        # the module, so it is accepted and ignored. Any other unknown kwarg raises.
+        data_module: str | None = None,
     ) -> None:
         # Support `Cu3sDataModule(**cfg.data)` where cfg.data is the nested DataConfig shape
         # {data_module, splits, params, batch_size}: pull module values out of params.

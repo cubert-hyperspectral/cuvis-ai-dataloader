@@ -95,7 +95,9 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         processing_mode: str = "Reflectance",
         split: str | None = None,
         params: dict | None = None,
-        **_: Any,
+        # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
+        # identity fixes the module). Any other unknown kwarg raises.
+        data_module: str | None = None,
     ) -> None:
         if params:
             splits_csv = splits_csv or params.get("splits_csv")

@@ -20,6 +20,12 @@ def test_data_module_name_and_subclass():
     assert issubclass(TiffPairedDataModule, BaseCuvisAIDataModule)
 
 
+def test_unknown_kwarg_raises():
+    # Unknown / removed options fail loudly instead of being silently dropped.
+    with pytest.raises(TypeError, match="bogus"):
+        TiffPairedDataModule(images_dir="imgs", bogus=1)
+
+
 def test_parse_wavelengths_from_gdal():
     xml = '<GDALMetadata><Item name="wavelength">{400,410.5,420}</Item></GDALMetadata>'
     wl = _parse_wavelengths_from_gdal(xml)

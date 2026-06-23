@@ -3,6 +3,15 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## [Unreleased]
+
+- **DataModule constructors reject unknown keyword arguments.** `Cu3sDataModule`,
+  `MultiCu3sDataModule`, and `TiffPairedDataModule` no longer end in a `**_` catch-all that
+  silently dropped unrecognized kwargs. A typo or a removed option (e.g. an old `train_ids` /
+  `predict_ids`) now raises `TypeError` at construction instead of being ignored. The nested
+  `cls(**cfg.data)` shape still works: the one config-carried passthrough key, `data_module`, is
+  accepted explicitly and ignored.
+
 ## 0.1.0 - 2026-06-22
 
 - **Initial release.** Pluggable hyperspectral DataModules on cuvis-ai-core's SDK-free

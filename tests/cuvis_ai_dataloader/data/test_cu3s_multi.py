@@ -37,6 +37,12 @@ def test_validate_params_rejects_non_csv(tmp_path):
         MultiCu3sDataModule.validate_params({"splits_csv": str(bad)})
 
 
+def test_unknown_kwarg_raises():
+    # Unknown / removed options fail loudly instead of being silently dropped.
+    with pytest.raises(TypeError, match="bogus"):
+        MultiCu3sDataModule(splits_csv="x.csv", bogus=1)
+
+
 def test_csv_parsing_resolves_paths_and_frame_ids(mock_cuvis_sdk, tmp_path):
     csv_path = _write_dataset(tmp_path)
     dm = MultiCu3sDataModule(splits_csv=str(csv_path))
