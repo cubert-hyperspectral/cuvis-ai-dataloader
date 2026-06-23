@@ -30,6 +30,7 @@ def canonical(path: str | Path) -> str:
 
 
 def sha256_of_file(path: str | Path) -> str:
+    """Return the SHA-256 hex digest of ``path``, read in 1 MiB chunks."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -56,6 +57,7 @@ class Measurement:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Measurement":
+        """Build a :class:`Measurement` from a ``workspace.json`` entry (needs a ``path``)."""
         if not isinstance(d, dict) or not d.get("path"):
             raise ValueError(f"workspace measurement entries need a 'path': got {d!r}")
         return cls(
@@ -65,6 +67,7 @@ class Measurement:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize back to a ``workspace.json`` entry, omitting unset optional fields."""
         out: dict[str, Any] = {"path": self.path}
         if self.added_at is not None:
             out["added_at"] = self.added_at
@@ -137,6 +140,7 @@ class Workspace:
         return out
 
     def member_paths(self) -> list[str]:
+        """Member file paths, deduped by canonical identity (see :meth:`member_measurements`)."""
         return [m.path for m in self.member_measurements()]
 
     def duplicate_paths(self) -> list[str]:
@@ -204,6 +208,10 @@ class SplitsFile:
 
     @classmethod
     def load(cls, workspace_root: str | Path) -> "SplitsFile":
+        """Load ``splits.json`` from a workspace folder (or a direct path to the file).
+
+        A missing file or an unsupported version is a hard error, never silently ignored.
+        """
         p = Path(workspace_root)
         file = p if p.is_file() else p / SPLITS_FILENAME
         if not file.is_file():

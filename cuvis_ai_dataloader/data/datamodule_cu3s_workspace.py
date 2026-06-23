@@ -94,6 +94,8 @@ class WorkspaceCu3sDataModule(BaseCuvisAIDataModule):
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
+        """Require ``workspace_path`` to name a workspace folder that holds both
+        ``workspace.json`` and an already-resolved ``splits.json``."""
         from pathlib import Path
 
         from .workspace import SPLITS_FILENAME, WORKSPACE_FILENAME
@@ -112,6 +114,11 @@ class WorkspaceCu3sDataModule(BaseCuvisAIDataModule):
             )
 
     def build_stage_dataset(self, stage: str) -> Dataset:
+        """Build the dataset for ``stage`` from the workspace rows.
+
+        An empty ``predict`` split means all frames; the heavy cu3s/COCO extras are
+        imported lazily here, never at module import.
+        """
         rows = self._rows_by_stage.get(stage, [])
         if stage == "predict" and not rows:
             # DataSplitConfig convention: an empty predict set means ALL frames.
