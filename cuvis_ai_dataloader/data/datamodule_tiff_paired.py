@@ -72,7 +72,9 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
         label_output_key: str = "label_rgb",
         label_mode: str = "rgb",
         params: dict | None = None,
-        **_: Any,
+        # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
+        # identity fixes the module). Any other unknown kwarg raises.
+        data_module: str | None = None,
     ) -> None:
         if params:
             images_dir = images_dir or params.get("images_dir")

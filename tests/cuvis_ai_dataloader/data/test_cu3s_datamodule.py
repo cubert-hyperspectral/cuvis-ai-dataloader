@@ -133,6 +133,28 @@ def test_nested_cfg_data_construction(mock_cuvis_sdk, tmp_path):
     assert len(dm._predict_ds) == 7
 
 
+def test_dataset_exposes_wavelengths(mock_cuvis_sdk, tmp_path):
+    # Consumers read the wavelength axis once off the dataset (no per-item iteration).
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), batch_size=1)
+    dm.setup(stage="predict")
+    wl = dm.predict_ds.wavelengths_nm
+    assert len(wl) > 0
+    assert list(dm.predict_ds.wavelengths) == list(wl)  # back-compat alias
+
+
+def test_unknown_kwarg_raises(tmp_path):
+    # A removed or misspelled option must fail loudly, not be silently dropped.
+    with pytest.raises(TypeError, match="train_ids"):
+        Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), train_ids=[0, 1])
+
+
+def test_data_module_passthrough_key_accepted(mock_cuvis_sdk, tmp_path):
+    # The nested cfg.data shape carries `data_module`; it is accepted and ignored.
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), data_module="cu3s")
+    dm.setup(stage="predict")
+    assert len(dm._predict_ds) == 7
+
+
 def test_predict_dataset_with_measurement_indices(mock_cuvis_sdk, tmp_path):
     dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), measurement_indices=[0, 2, 4])
     dm.setup(stage="predict")

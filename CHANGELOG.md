@@ -3,6 +3,21 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## [Unreleased]
+
+## 0.2.0 - 2026-06-23
+
+- **DataModule constructors reject unknown keyword arguments.** `Cu3sDataModule`,
+  `MultiCu3sDataModule`, and `TiffPairedDataModule` no longer end in a `**_` catch-all that
+  silently dropped unrecognized kwargs. A typo or a removed option (e.g. an old `train_ids` /
+  `predict_ids`) now raises `TypeError` at construction instead of being ignored. The nested
+  `cls(**cfg.data)` shape still works: the one config-carried passthrough key, `data_module`, is
+  accepted explicitly and ignored.
+- **`Cu3sDataModule` datasets expose the wavelength axis.** `dm.<split>_ds.wavelengths_nm`
+  (with a `wavelengths` alias matching the former dataset API) returns the per-channel
+  wavelengths read once from the first sample's source, so consumers no longer have to pull a
+  full cube via `ds[0]["wavelengths"]` just for the axis.
+
 ## 0.1.0 - 2026-06-22
 
 - **Initial release.** Pluggable hyperspectral DataModules on cuvis-ai-core's SDK-free

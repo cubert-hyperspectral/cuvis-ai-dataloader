@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Any, ClassVar
 
+import numpy as np
 from torch.utils.data import Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
@@ -72,6 +73,22 @@ class _Cu3sRefDataset(Dataset):
     def __len__(self) -> int:
         return len(self._refs)
 
+    @property
+    def wavelengths_nm(self) -> np.ndarray:
+        """Per-channel wavelengths (nm, int32) read from the first sample's source.
+
+        Cubes in one cu3s share a wavelength axis, so consumers can read this once
+        without iterating the dataset.
+        """
+        if not self._refs:
+            raise ValueError("dataset is empty; no wavelengths available")
+        return self._reader_for(self._refs[0].source).wavelengths_nm
+
+    @property
+    def wavelengths(self) -> np.ndarray:
+        """Alias of :attr:`wavelengths_nm` (the accessor the former dataset exposed)."""
+        return self.wavelengths_nm
+
     def __getitem__(self, idx: int) -> dict:
         ref = self._refs[idx]
         read_pos = ref.index if ref.index is not None else 0
@@ -109,7 +126,9 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         # universe; selectors then index into it.
         glob: Any = None,
         params: dict | None = None,
-        **_: Any,
+        # Carried by the nested `cls(**cfg.data)` shape; the class identity already fixes
+        # the module, so it is accepted and ignored. Any other unknown kwarg raises.
+        data_module: str | None = None,
     ) -> None:
         # Support `Cu3sDataModule(**cfg.data)` where cfg.data is the nested DataConfig shape
         # {data_module, splits, params, batch_size}: pull module values out of params.
