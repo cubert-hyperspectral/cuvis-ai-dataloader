@@ -166,14 +166,14 @@ def test_no_coco_sibling_yields_zero_mask(mock_cuvis_sdk, tmp_path):
 
     csv_path = _write_ranged_dataset(tmp_path)
     dm = MultiCu3sDataModule(splits_csv=str(csv_path))
-    dm.setup(stage='test')  # the 'test' split row is clip.cu3s with no annotation
+    dm.setup(stage="test")  # the 'test' split row is clip.cu3s with no annotation
     ds = dm._test_ds
-    assert ds._rows[0]['annotation_json'] == ''  # the no-sibling row
+    assert ds._rows[0]["annotation_json"] == ""  # the no-sibling row
     item = ds[0]
-    assert 'mask' in item
-    h, w = mock_cuvis_sdk['hw']
-    assert item['mask'].shape == (h, w)
-    assert item['mask'].dtype == np.int32
-    assert int(item['mask'].sum()) == 0
+    assert "mask" in item
+    h, w = mock_cuvis_sdk["hw"]
+    assert item["mask"].shape == (h, w)
+    assert item["mask"].dtype == np.int32
+    assert int(item["mask"].sum()) == 0
     # No COCO file was opened for this frame.
     assert len(ds._labelers) == 0

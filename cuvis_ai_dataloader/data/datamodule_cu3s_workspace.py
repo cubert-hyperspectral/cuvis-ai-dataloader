@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 
 from torch.utils.data import Dataset
 
-from cuvis_ai_core.data.datamodule import BaseHyperspectralDataModule
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_core.utils.general import expand_range_selectors
 
 from .datamodule_cu3s_multi import _MultiCu3sDataset
@@ -26,7 +26,7 @@ from .workspace import SplitsFile, Workspace, coco_sibling
 _STAGES = ("train", "val", "test", "predict")
 
 
-class WorkspaceCu3sDataModule(BaseHyperspectralDataModule):
+class WorkspaceCu3sDataModule(BaseCuvisAIDataModule):
     """Multi-file cu3s DataModule driven by a workspace folder."""
 
     DATA_MODULE_NAME: ClassVar[str] = "cu3s_workspace"
