@@ -133,6 +133,15 @@ def test_nested_cfg_data_construction(mock_cuvis_sdk, tmp_path):
     assert len(dm._predict_ds) == 7
 
 
+def test_dataset_exposes_wavelengths(mock_cuvis_sdk, tmp_path):
+    # Consumers read the wavelength axis once off the dataset (no per-item iteration).
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), batch_size=1)
+    dm.setup(stage="predict")
+    wl = dm.predict_ds.wavelengths_nm
+    assert len(wl) > 0
+    assert list(dm.predict_ds.wavelengths) == list(wl)  # back-compat alias
+
+
 def test_unknown_kwarg_raises(tmp_path):
     # A removed or misspelled option must fail loudly, not be silently dropped.
     with pytest.raises(TypeError, match="train_ids"):

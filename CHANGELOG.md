@@ -11,6 +11,10 @@ uses semantic versioning.
   `predict_ids`) now raises `TypeError` at construction instead of being ignored. The nested
   `cls(**cfg.data)` shape still works: the one config-carried passthrough key, `data_module`, is
   accepted explicitly and ignored.
+- **`Cu3sDataModule` datasets expose the wavelength axis.** `dm.<split>_ds.wavelengths_nm`
+  (with a `wavelengths` alias matching the former dataset API) returns the per-channel
+  wavelengths read once from the first sample's source, so consumers no longer have to pull a
+  full cube via `ds[0]["wavelengths"]` just for the axis.
 
 ## 0.1.0 - 2026-06-22
 
