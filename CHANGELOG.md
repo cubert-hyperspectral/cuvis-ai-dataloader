@@ -5,6 +5,8 @@ uses semantic versioning.
 
 ## [Unreleased]
 
+- Added a `no-local-sources` CI workflow that fails if `pyproject.toml` declares a local `[tool.uv.sources]` path entry (a machine-specific path must not ship in a release).
+
 ## 0.2.0 - 2026-06-23
 
 - **DataModule constructors reject unknown keyword arguments.** `Cu3sDataModule`,
