@@ -5,6 +5,16 @@ uses semantic versioning.
 
 ## [Unreleased]
 
+## 0.3.0 - 2026-07-01
+
+- **Added `MultiNpzDataModule` (`data_module_name: npz_multi`).** A generic one-frame-per-file NPZ
+  loader driven by a splits CSV (`split, npz_path, image_id`; extra columns ignored). Each `.npz`
+  carries `cube [H,W,C] f32` + `wavelengths [C]`, and an optional baked `mask [H,W] int32` (zeros
+  when absent); samples are `{cube, mask, wavelengths, mesu_index, frame_id}`. Needs no extras
+  (numpy/torch are core) and no Cuvis SDK. Module-owned splits only (CSV `split` column). Unlike the
+  cu3s modules it honors `pin_memory` / `persistent_workers` / `worker_multiprocessing_context`,
+  since pure-CPU numpy loads benefit from them. Migrated from the cuvis-ai-dinomaly plugin so any
+  pipeline can use it.
 - Added a `no-local-sources` CI workflow that fails if `pyproject.toml` declares a local `[tool.uv.sources]` path entry (a machine-specific path must not ship in a release).
 
 ## 0.2.0 - 2026-06-23

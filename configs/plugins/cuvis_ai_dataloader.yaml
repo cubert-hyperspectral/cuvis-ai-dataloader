@@ -9,4 +9,5 @@ package_name: cuvis-ai-dataloader  # manifest key (underscore) != PyPI name (hyp
 capabilities:
   - { class_name: cuvis_ai_dataloader.data.datamodule_cu3s.Cu3sDataModule,              kind: data_module, data_module_name: cu3s,        extras: [cu3s, coco] }
   - { class_name: cuvis_ai_dataloader.data.datamodule_cu3s_multi.MultiCu3sDataModule,   kind: data_module, data_module_name: cu3s_multi,  extras: [cu3s, coco] }
+  - { class_name: cuvis_ai_dataloader.data.datamodule_npz_multi.MultiNpzDataModule,     kind: data_module, data_module_name: npz_multi,   extras: [] }
   - { class_name: cuvis_ai_dataloader.data.datamodule_tiff_paired.TiffPairedDataModule, kind: data_module, data_module_name: tiff_paired, extras: [tiff] }

@@ -24,6 +24,7 @@ other Cuvis.AI repo pins it.
 |---|---|---|---|
 | `cu3s` | one `.cu3s` session (or a folder of them) via `cuvis` | COCO JSON | `[cu3s, coco]` |
 | `cu3s_multi` | many `.cu3s`, one frame per CSV row | per-day COCO JSON | `[cu3s, coco]` |
+| `npz_multi` | many `.npz`, one frame per CSV row | baked `mask` array | none |
 | `tiff_paired` | a folder of `*.tif` / `*.tiff` cubes via `tifffile` | paired PNG | `[tiff]` |
 
 Key points:
@@ -40,11 +41,12 @@ Splits are defined in one of two ways:
   Composable selectors over an attributed sample universe are resolved into a
   committable `splits.json` by the `resolve-splits` CLI, then referenced from a
   `DataConfig.splits`.
-- **CSV `split` column** is specific to `cu3s_multi`, which is driven by a
-  required CSV manifest (`split, cu3s_path, annotation_json, image_id`). With no
-  `DataConfig.splits`, each stage maps straight to that `split` column; otherwise
-  the CSV rows become the selector universe (and `resolve-splits --from-csv`
-  turns the CSV into a `splits.json`).
+- **CSV `split` column** drives `cu3s_multi` (`split, cu3s_path, annotation_json,
+  image_id`) and `npz_multi` (`split, npz_path, image_id`). With no
+  `DataConfig.splits`, each stage maps straight to that `split` column; for
+  `cu3s_multi` the CSV rows can also become the selector universe (and
+  `resolve-splits --from-csv` turns the CSV into a `splits.json`). `npz_multi` is
+  module-owned only (no selector path).
 
 ## Installation
 
@@ -124,6 +126,39 @@ from cuvis_ai_core.utils.restore import restore_pipeline
 pipeline = restore_pipeline("X.yaml", plugins_dirs=[...])
 dm = Cu3sDataModule(cu3s_file_path="X.cu3s", batch_size=1)
 Predictor(pipeline, dm).predict()
+```
+
+### NPZ (`npz_multi`)
+
+`npz_multi` loads one frame per compressed `.npz`, listed in a splits CSV. It needs
+no extras (numpy is a core dep) and no Cuvis SDK. Each `.npz` carries:
+
+- `cube`: `[H, W, C]` float32
+- `wavelengths`: `[C]` (cast to int32)
+- `mask` (optional): `[H, W]` int32 ground truth (zeros are emitted when absent)
+
+The CSV requires `split, npz_path, image_id` (extra columns are ignored); relative
+paths resolve against the CSV's directory. Each sample is
+`{cube, mask, wavelengths, mesu_index, frame_id}`. Unlike the cu3s modules,
+`npz_multi` honors `pin_memory` / `persistent_workers` /
+`worker_multiprocessing_context` (pure-CPU numpy loads benefit from them).
+
+```python
+from cuvis_ai_dataloader.data import MultiNpzDataModule
+
+dm = MultiNpzDataModule(splits_csv="splits.csv", batch_size=4, num_workers=4)
+dm.setup("fit")
+batch = next(iter(dm.train_dataloader()))  # cube [B,H,W,C], mask [B,H,W], ...
+```
+
+In a `DataConfig` (training / `restore-trainrun`):
+
+```yaml
+data:
+  data_module: npz_multi
+  batch_size: 4
+  params:
+    splits_csv: splits.csv
 ```
 
 ## Architecture
