@@ -55,6 +55,7 @@ Source = "https://github.com/cubert-hyperspectral/cuvis-ai-dataloader"
 
 [project.scripts]
 resolve-splits = "cuvis_ai_dataloader.scripts.resolve_splits:resolve_splits_cli"
+cu3s-to-npz = "cuvis_ai_dataloader.scripts.convert_cu3s_to_npz:cu3s_to_npz_cli"
 
 [project.optional-dependencies]
 # Per-format heavy deps. The orchestrator composer installs the union of extras

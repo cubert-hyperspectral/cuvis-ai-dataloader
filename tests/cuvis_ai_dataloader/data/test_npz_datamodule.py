@@ -11,16 +11,20 @@ from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_dataloader.data.datamodule_npz_multi import MultiNpzDataModule, _MultiNpzDataset
 
 
-def _write_npz(path: Path, *, with_mask: bool) -> None:
+def _write_npz(path: Path, *, with_mask: bool, with_class_mask: bool = False) -> None:
     h, w, c = 8, 10, 5
     cube = np.zeros((h, w, c), dtype=np.float32)
     wavelengths = np.linspace(450, 850, c).astype(np.float32)
+    arrays: dict[str, np.ndarray] = {"cube": cube, "wavelengths": wavelengths}
     if with_mask:
         mask = np.zeros((h, w), dtype=np.int32)
         mask[2:5, 3:7] = 2
-        np.savez(path, cube=cube, wavelengths=wavelengths, mask=mask)
-    else:
-        np.savez(path, cube=cube, wavelengths=wavelengths)
+        arrays["mask"] = mask
+    if with_class_mask:
+        class_mask = np.zeros((h, w), dtype=np.uint8)
+        class_mask[2:5, 3:7] = 3  # COCO category id 3
+        arrays["class_mask"] = class_mask
+    np.savez(path, **arrays)
 
 
 def _write_dataset(tmp_path: Path) -> Path:
@@ -91,6 +95,28 @@ def test_dataset_builds_empty_mask_when_absent(tmp_path):
     assert item["mask"].shape == (8, 10)
     assert item["mask"].dtype == np.int32
     assert np.all(item["mask"] == 0)
+
+
+def test_dataset_reads_class_mask_when_present(tmp_path):
+    npz = tmp_path / "frame_cm.npz"
+    _write_npz(npz, with_mask=True, with_class_mask=True)
+    ds = _MultiNpzDataset([{"npz_path": str(npz), "image_id": 5, "frame_id": 0}])
+    item = ds[0]
+    assert item["class_mask"].shape == (8, 10)
+    assert item["class_mask"].dtype == np.uint8
+    assert int(item["class_mask"].max()) == 3  # COCO category id preserved
+    # binary mask and class_mask agree on the anomalous region
+    assert np.array_equal(item["class_mask"] > 0, item["mask"] > 0)
+
+
+def test_dataset_emits_zero_class_mask_when_absent(tmp_path):
+    npz = tmp_path / "frame_nocm.npz"
+    _write_npz(npz, with_mask=True)  # no class_mask key
+    ds = _MultiNpzDataset([{"npz_path": str(npz), "image_id": 6, "frame_id": 0}])
+    item = ds[0]
+    assert item["class_mask"].shape == (8, 10)
+    assert item["class_mask"].dtype == np.uint8
+    assert np.all(item["class_mask"] == 0)
 
 
 def test_build_stage_filters_by_split(tmp_path):

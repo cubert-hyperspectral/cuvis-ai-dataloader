@@ -7,7 +7,9 @@ Each ``.npz`` carries:
 
 * ``cube``: ``[H, W, C]`` float32
 * ``wavelengths``: ``[C]`` (cast to int32 for node compatibility)
-* ``mask`` (optional): ``[H, W]`` int32 ground-truth (zeros are emitted when absent)
+* ``mask`` (optional): ``[H, W]`` int32 binary ground-truth (zeros are emitted when absent)
+* ``class_mask`` (optional): ``[H, W]`` uint8 per-pixel COCO category id (0 = background);
+  zeros are emitted when absent. Consumed by per-class evaluation (e.g. per-class AUROC).
 
 Split model: **module-owned only** (``DataConfig.splits is None``). Each Lightning stage maps
 to the CSV ``split`` column via ``build_stage_dataset``. The selector-driven path is not
@@ -62,9 +64,18 @@ class _MultiNpzDataset(Dataset):
                 if "mask" in z.files
                 else np.zeros((cube.shape[0], cube.shape[1]), dtype=np.int32)
             )
+            # Optional multi-class GT (pixel = COCO category id, 0 = background). Emitted for
+            # every frame (zeros when absent) so batch keys stay uniform for default_collate;
+            # consumed by per-class evaluation (e.g. per-class AUROC).
+            class_mask = (
+                np.asarray(z["class_mask"], dtype=np.uint8)
+                if "class_mask" in z.files
+                else np.zeros((cube.shape[0], cube.shape[1]), dtype=np.uint8)
+            )
         return {
             "cube": cube,
             "mask": mask,
+            "class_mask": class_mask,
             "wavelengths": wavelengths,
             "mesu_index": int(rec["image_id"]),
             "frame_id": int(rec["frame_id"]),

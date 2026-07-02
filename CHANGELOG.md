@@ -5,6 +5,17 @@ uses semantic versioning.
 
 ## [Unreleased]
 
+- **`MultiNpzDataModule` surfaces an optional `class_mask`.** Each `.npz` may now carry a
+  `class_mask [H,W] uint8` (per-pixel COCO category id, 0 = background); it is emitted in the batch
+  (zeros when absent) for per-class evaluation (e.g. per-class pixel AUROC). Backward-compatible:
+  the extra key is additive and frames without it get a zero plane.
+- **cu3s → per-frame NPZ converter (`data/npz_converter.py`) + `cu3s-to-npz` CLI.** Converts each
+  measurement of a `.cu3s` (Preview → Reflectance via the cu3s reader) into one `.npz` for
+  `npz_multi`, baking the frame's COCO annotations into `mask` (binary int32) + `class_mask` (uint8
+  category id) via the COCO labeler, with optional edge crop. Emits a traceability index
+  (`npz_path, source_cu3s, image_id`). **No train/val/test split is assigned** — splitting is a
+  separate concern.
+
 ## 0.3.0 - 2026-07-01
 
 - **Added `MultiNpzDataModule` (`data_module_name: npz_multi`).** A generic one-frame-per-file NPZ
