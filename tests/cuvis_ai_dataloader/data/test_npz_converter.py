@@ -52,14 +52,14 @@ def test_apply_crop_rejects_too_large_and_negative():
 
 def test_write_index_csv_has_no_split_column(tmp_path):
     recs = [
-        {"npz_path": "a/x_000000.npz", "source_cu3s": "a.cu3s", "image_id": 0},
-        {"npz_path": "a/x_000001.npz", "source_cu3s": "a.cu3s", "image_id": 1},
+        {"npz_path": "a/x_000000.npz", "source_cu3s": "a.cu3s", "image_id": 0, "frame_index": 0},
+        {"npz_path": "a/x_000001.npz", "source_cu3s": "a.cu3s", "image_id": 1, "frame_index": 1},
     ]
     out = tmp_path / "index.csv"
     write_index_csv(recs, out)
     with out.open() as f:
         rows = list(csv.DictReader(f))
-    assert list(rows[0].keys()) == ["npz_path", "source_cu3s", "image_id"]
+    assert list(rows[0].keys()) == ["npz_path", "source_cu3s", "image_id", "frame_index"]
     assert "split" not in rows[0]
     assert rows[1]["image_id"] == "1"
 
@@ -119,6 +119,54 @@ def test_convert_cu3s_file_with_annotations(patched, tmp_path):
         assert z["class_mask"].shape == (6, 8) and z["class_mask"].dtype == np.uint8
         assert int(z["class_mask"].max()) == 3  # category preserved (loads via npz_multi)
         assert str(z["source_cu3s"]).endswith("Auto_000.cu3s")
+
+
+class _ImageIdLabeler:
+    """Fake labeler that paints category == image_id, to prove load_for keys on image_id."""
+
+    def __init__(self, json_path):
+        self.json_path = json_path
+
+    def load_for(self, image_id, item):
+        cube = item["cube"]
+        h, w = cube.shape[0], cube.shape[1]
+        cat = np.zeros((h, w), dtype=np.int32)
+        cat[1:3, 2:5] = int(image_id)
+        return {"mask": cat}
+
+
+def test_convert_cu3s_file_image_ids_decouple_read_from_label(monkeypatch, tmp_path):
+    # Merged-cu3s case: read frame_indices, but label by a DIFFERENT image_id per frame.
+    monkeypatch.setattr("cuvis_ai_dataloader.data.readers.cu3s_reader.Cu3sCubeReader", _FakeReader)
+    monkeypatch.setattr("cuvis_ai_dataloader.data.labelers.coco_labeler.CocoLabeler", _ImageIdLabeler)
+    recs = convert_cu3s_file(
+        tmp_path / "merged.cu3s",
+        tmp_path / "out",
+        annotation_json=tmp_path / "a.json",
+        frame_indices=[0, 1],
+        image_ids=[10, 20],
+    )
+    assert [r["image_id"] for r in recs] == [10, 20]     # label id comes from image_ids
+    assert [r["frame_index"] for r in recs] == [0, 1]    # read index comes from frame_indices
+    with np.load(recs[0]["npz_path"]) as z:
+        assert float(z["cube"][0, 0, 0]) == 1.0          # cube read from FRAME 0 (_FakeReader: i+1)
+        assert int(z["class_mask"].max()) == 10          # mask looked up by IMAGE_ID 10
+    with np.load(recs[1]["npz_path"]) as z:
+        assert float(z["cube"][0, 0, 0]) == 2.0          # cube read from FRAME 1
+        assert int(z["class_mask"].max()) == 20          # mask looked up by IMAGE_ID 20
+    # filenames use the read (frame) index for uniqueness within the cu3s
+    assert recs[0]["npz_path"].endswith("merged_000000.npz")
+
+
+def test_convert_cu3s_file_image_ids_length_mismatch_raises(patched, tmp_path):
+    with pytest.raises(ValueError, match="parallel to frame_indices"):
+        convert_cu3s_file(
+            tmp_path / "m.cu3s",
+            tmp_path / "out",
+            annotation_json=tmp_path / "a.json",
+            frame_indices=[0, 1],
+            image_ids=[10],
+        )
 
 
 def test_convert_cu3s_file_without_annotations_writes_no_mask(patched, tmp_path):

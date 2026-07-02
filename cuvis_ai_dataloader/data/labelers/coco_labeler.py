@@ -320,8 +320,10 @@ def create_mask(
 class CocoLabeler:
     """Caches one parsed COCO file and rasterizes per-image category masks.
 
-    Used by the cu3s DataModules: one labeler per unique annotation JSON. Keys on
-    the COCO ``image_id`` (which equals the cu3s measurement index).
+    Used by the cu3s DataModules: one labeler per unique annotation JSON. Keys purely on the
+    COCO ``image_id``. For per-frame cu3s that id is the measurement index; for *merged* cu3s
+    with sparse annotations it is not, so the converter passes an explicit ``image_id`` per read
+    frame (see ``npz_converter.convert_cu3s_file``'s ``image_ids``).
     """
 
     def __init__(self, annotation_json_path: str | Path) -> None:

@@ -14,8 +14,10 @@ multi-class ``class_mask`` (via the COCO labeler), optionally crops, and writes 
 These load directly via :class:`~cuvis_ai_dataloader.data.datamodule_npz_multi.MultiNpzDataModule`.
 
 **No train/val/test split is assigned here** — splitting is a separate concern. The converter
-only emits a small index (``npz_path, source_cu3s, image_id``) so a frame can be traced back to
-its source session; a split CSV is produced elsewhere and joined on that.
+only emits a small index (``npz_path, source_cu3s, image_id, frame_index``) so a frame can be
+traced back to its source session; a split CSV is produced elsewhere and joined on that.
+For *merged* cu3s whose annotated frames are sparse (``image_id`` != measurement index), pass
+``image_ids`` parallel to ``frame_indices`` to label the right COCO image per read frame.
 """
 
 from __future__ import annotations
@@ -68,6 +70,7 @@ def convert_cu3s_file(
     crop: CropMargins | None = None,
     processing_mode: str | None = "Reflectance",
     frame_indices: list[int] | None = None,
+    image_ids: list[int] | None = None,
     compress: bool = True,
 ) -> list[dict[str, Any]]:
     """Convert one ``.cu3s`` to per-frame ``.npz`` files; return index records (no split).
@@ -76,6 +79,13 @@ def convert_cu3s_file(
     masks together (so polygon coordinates stay aligned). Frames whose ``image_id`` is absent
     from / unannotated in the COCO get an all-zero mask (i.e. a normal frame). When
     ``annotation_json`` is ``None``, no masks are written (the loader emits zeros).
+
+    By default a frame's COCO ``image_id`` is its cu3s measurement index. Pass ``image_ids``
+    (parallel to ``frame_indices``) to **decouple** the two — required for *merged* cu3s whose
+    annotated frames are sparse, so the measurement index that is *read* differs from the COCO
+    ``image_id`` the mask is *looked up* by (e.g. lentils: ``camera_frame_num`` vs
+    ``global_image_id``). ``frame_indices[k]`` is read and labelled via ``image_ids[k]``; each
+    emitted record carries both ``frame_index`` (read index) and ``image_id`` (COCO id).
     """
     from .labelers.coco_labeler import CocoLabeler
     from .readers.cu3s_reader import Cu3sCubeReader
@@ -89,8 +99,14 @@ def convert_cu3s_file(
     with Cu3sCubeReader(str(cu3s_path), processing_mode=processing_mode) as reader:
         total = int(reader.total_measurements)
         indices = list(frame_indices) if frame_indices is not None else list(range(total))
-        for i in indices:
+        if image_ids is not None and len(image_ids) != len(indices):
+            raise ValueError(
+                f"image_ids length {len(image_ids)} must be parallel to frame_indices "
+                f"(got {len(indices)} frame(s))"
+            )
+        for k, i in enumerate(indices):
             i = int(i)
+            image_id = int(image_ids[k]) if image_ids is not None else i
             item = reader.read(i)
             cube_full = np.asarray(item["cube"], dtype=np.float32)  # [H, W, C]
             wavelengths = np.asarray(item["wavelengths"]).ravel().astype(np.int32, copy=False)
@@ -100,14 +116,19 @@ def convert_cu3s_file(
                 "source_cu3s": str(cu3s_path),
             }
             if labeler is not None:
-                # Rasterize at full cube size, then crop to match the cube.
-                cat_full = np.asarray(labeler.load_for(i, {"cube": cube_full})["mask"])
+                # Rasterize at full cube size (looked up by COCO image_id), then crop to match.
+                cat_full = np.asarray(labeler.load_for(image_id, {"cube": cube_full})["mask"])
                 mask, class_mask = derive_masks(apply_crop(cat_full, crop))
                 payload["mask"] = mask
                 payload["class_mask"] = class_mask
             out = out_dir / f"{cu3s_path.stem}_{i:06d}.npz"
             (np.savez_compressed if compress else np.savez)(out, **payload)
-            records.append({"npz_path": str(out), "source_cu3s": str(cu3s_path), "image_id": i})
+            records.append({
+                "npz_path": str(out),
+                "source_cu3s": str(cu3s_path),
+                "image_id": image_id,
+                "frame_index": i,
+            })
     logger.info("converted {} -> {} frame(s) into {}", cu3s_path.name, len(records), out_dir)
     return records
 
@@ -167,9 +188,9 @@ def convert_cu3s(
 
 
 def write_index_csv(records: list[dict[str, Any]], path: str | Path) -> None:
-    """Write the traceability index (``npz_path, source_cu3s, image_id``). No split column."""
-    fields = ["npz_path", "source_cu3s", "image_id"]
+    """Write the traceability index (``npz_path, source_cu3s, image_id, frame_index``). No split."""
+    fields = ["npz_path", "source_cu3s", "image_id", "frame_index"]
     with Path(path).open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        writer.writerows({k: r[k] for k in fields} for r in records)
+        writer.writerows({k: r.get(k, "") for k in fields} for r in records)
