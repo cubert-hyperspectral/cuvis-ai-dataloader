@@ -100,12 +100,8 @@ class _FakeLabeler:
 
 @pytest.fixture
 def patched(monkeypatch):
-    monkeypatch.setattr(
-        "cuvis_ai_dataloader.data.readers.cu3s_reader.Cu3sCubeReader", _FakeReader
-    )
-    monkeypatch.setattr(
-        "cuvis_ai_dataloader.data.labelers.coco_labeler.CocoLabeler", _FakeLabeler
-    )
+    monkeypatch.setattr("cuvis_ai_dataloader.data.readers.cu3s_reader.Cu3sCubeReader", _FakeReader)
+    monkeypatch.setattr("cuvis_ai_dataloader.data.labelers.coco_labeler.CocoLabeler", _FakeLabeler)
 
 
 # --------------------------------------------------------------------------- orchestration
@@ -134,8 +130,10 @@ def test_convert_cu3s_file_without_annotations_writes_no_mask(patched, tmp_path)
 
 def test_convert_cu3s_file_applies_crop_to_cube_and_masks(patched, tmp_path):
     recs = convert_cu3s_file(
-        tmp_path / "c.cu3s", tmp_path / "out",
-        annotation_json=tmp_path / "a.json", crop=(1, 1, 2, 2),
+        tmp_path / "c.cu3s",
+        tmp_path / "out",
+        annotation_json=tmp_path / "a.json",
+        crop=(1, 1, 2, 2),
     )
     with np.load(recs[0]["npz_path"]) as z:
         assert z["cube"].shape == (4, 4, 3)  # (6-2, 8-4)
@@ -155,20 +153,32 @@ def test_cli_parses_and_dispatches(monkeypatch, tmp_path):
         captured["kw"] = kw
         return [{"npz_path": "x.npz", "source_cu3s": "a.cu3s", "image_id": 0}]
 
+    monkeypatch.setattr("cuvis_ai_dataloader.data.npz_converter.convert_cu3s", fake_convert_cu3s)
     monkeypatch.setattr(
-        "cuvis_ai_dataloader.data.npz_converter.convert_cu3s", fake_convert_cu3s
-    )
-    monkeypatch.setattr(
-        sys, "argv",
-        ["cu3s-to-npz", "--cu3s", "a.cu3s", "b.cu3s", "--out-dir", str(tmp_path),
-         "--crop", "300,300,300,300", "--annotations", "none", "--limit", "2",
-         "--processing-mode", "none"],
+        sys,
+        "argv",
+        [
+            "cu3s-to-npz",
+            "--cu3s",
+            "a.cu3s",
+            "b.cu3s",
+            "--out-dir",
+            str(tmp_path),
+            "--crop",
+            "300,300,300,300",
+            "--annotations",
+            "none",
+            "--limit",
+            "2",
+            "--processing-mode",
+            "none",
+        ],
     )
     cu3s_to_npz_cli()
     assert captured["paths"] == ["a.cu3s", "b.cu3s"]
     assert captured["kw"]["crop"] == (300, 300, 300, 300)
-    assert captured["kw"]["annotations"] is None       # "none" -> None
-    assert captured["kw"]["processing_mode"] is None    # "none" -> None
+    assert captured["kw"]["annotations"] is None  # "none" -> None
+    assert captured["kw"]["processing_mode"] is None  # "none" -> None
     assert captured["kw"]["frame_limit"] == 2
 
 
@@ -187,8 +197,10 @@ def test_convert_cu3s_multi_writes_index(patched, tmp_path):
     (tmp_path / "s2.cu3s").touch()
     idx = tmp_path / "index.csv"
     recs = convert_cu3s(
-        [tmp_path / "s1.cu3s", tmp_path / "s2.cu3s"], tmp_path / "out",
-        annotations=tmp_path / "shared.json", index_csv=idx,
+        [tmp_path / "s1.cu3s", tmp_path / "s2.cu3s"],
+        tmp_path / "out",
+        annotations=tmp_path / "shared.json",
+        index_csv=idx,
     )
     assert len(recs) == 4  # 2 files x 2 frames
     with idx.open() as f:

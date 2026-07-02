@@ -21,6 +21,7 @@ its source session; a split CSV is produced elsewhere and joined on that.
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -106,14 +107,14 @@ def convert_cu3s_file(
                 payload["class_mask"] = class_mask
             out = out_dir / f"{cu3s_path.stem}_{i:06d}.npz"
             (np.savez_compressed if compress else np.savez)(out, **payload)
-            records.append(
-                {"npz_path": str(out), "source_cu3s": str(cu3s_path), "image_id": i}
-            )
+            records.append({"npz_path": str(out), "source_cu3s": str(cu3s_path), "image_id": i})
     logger.info("converted {} -> {} frame(s) into {}", cu3s_path.name, len(records), out_dir)
     return records
 
 
-def _resolve_annotation(cu3s_path: Path, annotations: Any) -> str | Path | None:
+def _resolve_annotation(
+    cu3s_path: Path, annotations: str | Path | dict[str, str | Path] | None
+) -> str | Path | None:
     """Resolve the COCO json for one cu3s.
 
     ``annotations`` may be: ``None`` (no masks); a str/Path (one shared COCO for every cu3s);
@@ -131,7 +132,7 @@ def _resolve_annotation(cu3s_path: Path, annotations: Any) -> str | Path | None:
 
 
 def convert_cu3s(
-    cu3s_paths: list[str | Path],
+    cu3s_paths: Sequence[str | Path],
     out_dir: str | Path,
     *,
     annotations: Any = "sibling",
