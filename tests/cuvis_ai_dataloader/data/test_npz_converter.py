@@ -142,6 +142,46 @@ def test_convert_cu3s_file_applies_crop_to_cube_and_masks(patched, tmp_path):
         assert z["mask"].shape == (4, 4) and z["class_mask"].shape == (4, 4)
 
 
+def test_cli_parses_and_dispatches(monkeypatch, tmp_path):
+    import sys
+
+    from cuvis_ai_dataloader.scripts.convert_cu3s_to_npz import cu3s_to_npz_cli
+
+    captured: dict = {}
+
+    def fake_convert_cu3s(paths, out_dir, **kw):
+        captured["paths"] = [str(p) for p in paths]
+        captured["out_dir"] = str(out_dir)
+        captured["kw"] = kw
+        return [{"npz_path": "x.npz", "source_cu3s": "a.cu3s", "image_id": 0}]
+
+    monkeypatch.setattr(
+        "cuvis_ai_dataloader.data.npz_converter.convert_cu3s", fake_convert_cu3s
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        ["cu3s-to-npz", "--cu3s", "a.cu3s", "b.cu3s", "--out-dir", str(tmp_path),
+         "--crop", "300,300,300,300", "--annotations", "none", "--limit", "2",
+         "--processing-mode", "none"],
+    )
+    cu3s_to_npz_cli()
+    assert captured["paths"] == ["a.cu3s", "b.cu3s"]
+    assert captured["kw"]["crop"] == (300, 300, 300, 300)
+    assert captured["kw"]["annotations"] is None       # "none" -> None
+    assert captured["kw"]["processing_mode"] is None    # "none" -> None
+    assert captured["kw"]["frame_limit"] == 2
+
+
+def test_cli_crop_parser_rejects_bad():
+    import argparse
+
+    from cuvis_ai_dataloader.scripts.convert_cu3s_to_npz import _parse_crop
+
+    assert _parse_crop("1,2,3,4") == (1, 2, 3, 4)
+    with pytest.raises(argparse.ArgumentTypeError):
+        _parse_crop("1,2,3")  # not 4 values
+
+
 def test_convert_cu3s_multi_writes_index(patched, tmp_path):
     (tmp_path / "s1.cu3s").touch()
     (tmp_path / "s2.cu3s").touch()

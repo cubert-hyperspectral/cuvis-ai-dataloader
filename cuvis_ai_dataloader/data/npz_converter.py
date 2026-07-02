@@ -139,8 +139,13 @@ def convert_cu3s(
     processing_mode: str | None = "Reflectance",
     index_csv: str | Path | None = None,
     compress: bool = True,
+    frame_limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Convert many ``.cu3s`` files; optionally write a combined index CSV. Returns all records."""
+    """Convert many ``.cu3s`` files; optionally write a combined index CSV. Returns all records.
+
+    ``frame_limit`` (if set) converts only the first N frames of each file (for smoke runs).
+    """
+    frame_indices = list(range(frame_limit)) if frame_limit else None
     all_records: list[dict[str, Any]] = []
     for p in cu3s_paths:
         p = Path(p)
@@ -151,6 +156,7 @@ def convert_cu3s(
                 annotation_json=_resolve_annotation(p, annotations),
                 crop=crop,
                 processing_mode=processing_mode,
+                frame_indices=frame_indices,
                 compress=compress,
             )
         )
