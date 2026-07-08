@@ -27,6 +27,9 @@ dependencies = [
     "cuvis-ai-schemas>=0.6.0",
     "numpy",
     "torch",
+    # Declared directly so the pytorch-cu128 source pin applies (uv only honors
+    # tool.uv.sources for direct dependencies; torchvision is otherwise transitive).
+    "torchvision",
     "pytorch-lightning",
     "pillow>=12.2.0",
     "loguru>=0.7.3",
