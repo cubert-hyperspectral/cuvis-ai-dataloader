@@ -130,3 +130,35 @@ def test_loader_honors_pin_memory(tmp_path):
     dm = MultiNpzDataModule(splits_csv=str(csv_path), pin_memory=True, num_workers=0)
     dm.setup(stage="fit")
     assert dm.train_dataloader().pin_memory is True
+
+
+def test_samples_per_frame_expands_train_only(tmp_path):
+    csv_path = _write_dataset(tmp_path)
+    dm = MultiNpzDataModule(splits_csv=str(csv_path), samples_per_frame=3)
+    train = dm.build_stage_dataset("train")
+    val = dm.build_stage_dataset("val")
+    test = dm.build_stage_dataset("test")
+    assert len(train) == 3  # 1 train frame x 3 samples
+    assert len(val) == 1 and len(test) == 1  # never expanded
+    # Every duplicate references the same frame; per-sample randomness (e.g.
+    # crops) is drawn downstream, so duplicates ARE independent samples.
+    items = [train[i] for i in range(len(train))]
+    assert all(it["frame_id"] == items[0]["frame_id"] for it in items)
+
+
+def test_samples_per_frame_via_params_dict(tmp_path):
+    csv_path = _write_dataset(tmp_path)
+    dm = MultiNpzDataModule(params={"splits_csv": str(csv_path), "samples_per_frame": 2})
+    assert len(dm.build_stage_dataset("train")) == 2
+
+
+def test_samples_per_frame_default_is_identity(tmp_path):
+    csv_path = _write_dataset(tmp_path)
+    dm = MultiNpzDataModule(splits_csv=str(csv_path))
+    assert len(dm.build_stage_dataset("train")) == 1
+
+
+def test_samples_per_frame_validation(tmp_path):
+    csv_path = _write_dataset(tmp_path)
+    with pytest.raises(ValueError, match="samples_per_frame"):
+        MultiNpzDataModule(splits_csv=str(csv_path), samples_per_frame=0)

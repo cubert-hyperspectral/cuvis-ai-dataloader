@@ -87,6 +87,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         pin_memory: bool = False,
         persistent_workers: bool = False,
         worker_multiprocessing_context: str = "spawn",
+        samples_per_frame: int = 1,
         params: dict | None = None,
         # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
         # identity fixes the module). Any other unknown kwarg raises.
@@ -100,15 +101,19 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
             worker_multiprocessing_context = params.get(
                 "worker_multiprocessing_context", worker_multiprocessing_context
             )
+            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
         super().__init__(splits=splits, batch_size=batch_size, num_workers=num_workers)
         if not splits_csv:
             raise ValueError("npz_multi requires 'splits_csv'.")
+        if int(samples_per_frame) < 1:
+            raise ValueError(f"samples_per_frame must be >= 1, got {samples_per_frame}")
         self._splits_csv = Path(splits_csv).resolve()
         self._csv_dir = self._splits_csv.parent
         self._predict_split = split  # which CSV split predict_dataloader iterates (module-owned)
         self._pin_memory = bool(pin_memory)
         self._persistent_workers = bool(persistent_workers)
         self._worker_multiprocessing_context = worker_multiprocessing_context
+        self._samples_per_frame = int(samples_per_frame)
         self._rows = self._parse_csv(self._splits_csv)
 
     @staticmethod
@@ -127,6 +132,21 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         # DataConfig.splits is None: predict honors --data-arg split (default test).
         split = (self._predict_split or "test") if stage == "predict" else stage
         rows = [r for r in self._rows if split == "all" or r["split"] == split]
+        if stage == "train" and self._samples_per_frame > 1:
+            # Index-level duplication: each occurrence is one independent sample per
+            # epoch (downstream per-sample transforms, e.g. random crops, draw fresh
+            # for every occurrence), and the shuffled loader interleaves duplicates
+            # across the epoch. Val/test/predict are never expanded.
+            rows = [r for r in rows for _ in range(self._samples_per_frame)]
+            ds = _MultiNpzDataset(rows)
+            logger.info(
+                "npz_multi {} dataset: {} samples ({} frames x {})",
+                stage,
+                len(ds),
+                len(ds) // self._samples_per_frame,
+                self._samples_per_frame,
+            )
+            return ds
         ds = _MultiNpzDataset(rows)
         logger.info("npz_multi {} dataset: {} frames", stage, len(ds))
         return ds
