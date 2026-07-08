@@ -25,7 +25,7 @@ jobs:
     container:
       image: cubertgmbh/cuvis_pyil:3.5.0-ubuntu24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -73,7 +73,7 @@ jobs:
     container:
       image: cubertgmbh/cuvis_pyil:3.5.0-ubuntu24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Mark workspace as safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -100,7 +100,7 @@ jobs:
     container:
       image: cubertgmbh/cuvis_pyil:3.5.0-ubuntu24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Mark workspace as safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -130,7 +130,7 @@ jobs:
     container:
       image: cubertgmbh/cuvis_pyil:3.5.0-ubuntu24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Mark workspace as safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -164,7 +164,7 @@ jobs:
     container:
       image: cubertgmbh/cuvis_pyil:3.5.0-ubuntu24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
