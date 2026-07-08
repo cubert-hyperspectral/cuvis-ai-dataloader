@@ -447,6 +447,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pytorch-lightning" },
     { name = "torch" },
+    { name = "torchvision" },
 ]
 
 [package.optional-dependencies]
@@ -497,7 +498,7 @@ requires-dist = [
     { name = "cuvis-ai-dataloader", extras = ["all"], marker = "extra == 'dev'" },
     { name = "cuvis-ai-dataloader", extras = ["coco", "cu3s", "tiff"], marker = "extra == 'all'" },
     { name = "cuvis-ai-schemas", specifier = ">=0.6.0" },
-    { name = "cuvis-il", marker = "sys_platform == 'win32' and extra == 'cu3s'", specifier = "<3.5.3" },
+    { name = "cuvis-il", marker = "sys_platform == 'win32' and extra == 'cu3s'", specifier = "<3.5.4" },
     { name = "cyclonedx-bom", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "dataclass-wizard", marker = "extra == 'coco'", specifier = ">=0.39.1" },
     { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.4.0" },
@@ -515,6 +516,7 @@ requires-dist = [
     { name = "scikit-image", marker = "extra == 'coco'", specifier = ">=0.26.0" },
     { name = "tifffile", marker = "extra == 'tiff'", specifier = ">=2024.5.0" },
     { name = "torch", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=6.2.0" },
 ]
 provides-extras = ["cu3s", "coco", "tiff", "all", "dev"]
