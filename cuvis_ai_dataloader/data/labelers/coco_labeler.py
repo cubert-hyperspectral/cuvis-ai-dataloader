@@ -320,8 +320,10 @@ def create_mask(
 class CocoLabeler:
     """Caches one parsed COCO file and rasterizes per-image category masks.
 
-    Used by the cu3s DataModules: one labeler per unique annotation JSON. Keys on
-    the COCO ``image_id`` (which equals the cu3s measurement index).
+    Used by the cu3s DataModules: one labeler per unique annotation JSON. Keys purely on the
+    COCO ``image_id``. For per-frame cu3s that id is the measurement index; for *merged* cu3s
+    with sparse annotations it is not, so the converter passes an explicit ``image_id`` per read
+    frame (see ``npz_converter.convert_cu3s_file``'s ``image_ids``).
     """
 
     def __init__(self, annotation_json_path: str | Path) -> None:
@@ -351,7 +353,13 @@ class CocoLabeler:
         return seen
 
     def _canvas_size(self, image_id: int, fallback_hw: tuple[int, int]) -> tuple[int, int]:
-        """COCO image (height, width) for ``image_id``; falls back to the cube's."""
+        """COCO image (height, width) for ``image_id``; falls back to the cube's.
+
+        A COCO ``image`` record whose height or width is zero/negative (some exporters leave
+        these unset — e.g. the lentils day-level COCOs ship ``height=0, width=0``) is treated
+        as absent and falls back to the cube size, so masks rasterize at the real frame
+        resolution instead of collapsing to 0x0.
+        """
         fb_h, fb_w = int(fallback_hw[0]), int(fallback_hw[1])
         images = getattr(self._coco, "images", None)
         if isinstance(images, list):
@@ -359,16 +367,21 @@ class CocoLabeler:
                 if getattr(image, "id", None) != image_id:
                     continue
                 try:
-                    return int(image.height), int(image.width)
+                    h, w = int(image.height), int(image.width)
+                    if h > 0 and w > 0:
+                        return h, w
                 except (AttributeError, TypeError, ValueError):
-                    break
+                    pass
+                break
         coco_backend = getattr(self._coco, "_coco", None)
         image_lookup = getattr(coco_backend, "imgs", None)
         if isinstance(image_lookup, dict):
             meta = image_lookup.get(image_id)
             if isinstance(meta, dict):
                 try:
-                    return int(meta["height"]), int(meta["width"])
+                    h, w = int(meta["height"]), int(meta["width"])
+                    if h > 0 and w > 0:
+                        return h, w
                 except (KeyError, TypeError, ValueError):
                     pass
         return fb_h, fb_w
