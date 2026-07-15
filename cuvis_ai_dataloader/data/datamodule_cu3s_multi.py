@@ -119,6 +119,11 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         self._predict_split = split  # which CSV split predict_dataloader iterates (module-owned)
         self._rows = self._parse_csv(self._splits_csv)
 
+    @property
+    def rows(self) -> list[dict]:
+        """Public read-only view of the parsed CSV rows (``split, cu3s_path, read_index, ...``)."""
+        return self._rows
+
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
         """Validate that a ``splits_csv`` path is given, ends in ``.csv``, and exists."""

@@ -3,9 +3,27 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## [Unreleased]
+## 0.4.0 - 2026-07-15
 
 - Added `samples_per_frame: int = 1` to `MultiNpzDataModule`: index-level duplication of the train rows so each frame yields N independent samples per epoch (downstream per-sample transforms such as random crops draw fresh for every occurrence; the shuffled loader interleaves duplicates across the epoch). Val/test/predict are never expanded.
+- **Renamed the `npz_multi` universe input `index_csv` → `universe_csv`, generalized its columns.** The
+  argument is now `universe_csv` (a path to a `universe.csv`), one name across modules; its columns are
+  `source, index, path` (was `npz_path, source, image_id`) plus optional `annotation, format, group`
+  (`group` is reserved, carried onto `SampleRef.group` but not yet enforced by the leakage check).
+  The converter, `cu3s-to-npz` CLI (`--universe-csv`), and `convert_split_manifest` emit the new columns and write
+  `universe.csv` (`SplitManifestOutputs.universe_csv`). The reader now also rejects a duplicate `path`
+  and any `..` path escape (on top of the existing duplicate-`(source, index)` guard). Regenerate
+  npz `universe.csv` files; hand-authored splits.json are unaffected (identity is unchanged).
+- **`MultiNpzDataModule` surfaces an optional `class_mask`.** Each `.npz` may now carry a
+  `class_mask [H,W] uint8` (per-pixel COCO category id, 0 = background); it is emitted in the batch
+  (zeros when absent) for per-class evaluation (e.g. per-class pixel AUROC). Backward-compatible:
+  the extra key is additive and frames without it get a zero plane.
+- **cu3s → per-frame NPZ converter (`data/npz_converter.py`) + `cu3s-to-npz` CLI.** Converts each
+  measurement of a `.cu3s` (Preview → Reflectance via the cu3s reader) into one `.npz` for
+  `npz_multi`, baking the frame's COCO annotations into `mask` (binary int32) + `class_mask` (uint8
+  category id) via the COCO labeler, with optional edge crop. Emits a universe
+  (`source, index, path`). **No train/val/test split is assigned** — splitting is a
+  separate concern.
 
 ## 0.3.0 - 2026-07-01
 

@@ -361,3 +361,50 @@ class TestRLEListToMask:
 
         assert mask.shape == (2, 5)
         assert mask.sum() == 5
+
+
+class TestCocoLabelerCanvasFallback:
+    """``load_for`` must rasterize at the cube size when the COCO image record ships zero dims
+    (some exporters leave height/width unset — e.g. the lentils day-level COCOs)."""
+
+    @staticmethod
+    def _zero_dim_coco(tmp_path):
+        coco = {
+            "info": {},
+            "licenses": [{"id": 0, "name": "x"}],
+            "categories": [{"id": 0, "name": "bg"}, {"id": 2, "name": "stone"}],
+            "images": [{"id": 0, "file_name": "f.cu3s", "height": 0, "width": 0}],
+            "annotations": [
+                {
+                    "id": 1,
+                    "image_id": 0,
+                    "category_id": 2,
+                    "segmentation": [[2, 2, 8, 2, 8, 8, 2, 8]],
+                    "area": 36.0,
+                    "iscrowd": 0,
+                }
+            ],
+        }
+        p = tmp_path / "zerodim.json"
+        p.write_text(json.dumps(coco))
+        return p
+
+    def test_falls_back_to_cube_size(self, tmp_path):
+        import numpy as np
+
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import CocoLabeler
+
+        lab = CocoLabeler(self._zero_dim_coco(tmp_path))
+        out = lab.load_for(0, {"cube": np.zeros((10, 12, 1), dtype=np.float32)})["mask"]
+        assert out.shape == (10, 12)  # cube size, NOT 0x0
+        assert int(out.max()) == 2  # category rasterized at the real resolution
+        assert int((out == 2).sum()) > 0
+
+    def test_unannotated_image_zero_mask_at_cube_size(self, tmp_path):
+        import numpy as np
+
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import CocoLabeler
+
+        lab = CocoLabeler(self._zero_dim_coco(tmp_path))
+        out = lab.load_for(99, {"cube": np.zeros((10, 12, 1), dtype=np.float32)})["mask"]
+        assert out.shape == (10, 12) and int(out.max()) == 0

@@ -41,12 +41,11 @@ Splits are defined in one of two ways:
   Composable selectors over an attributed sample universe are resolved into a
   committable `splits.json` by the `resolve-splits` CLI, then referenced from a
   `DataConfig.splits`.
-- **CSV `split` column** drives `cu3s_multi` (`split, cu3s_path, annotation_json,
-  image_id`) and `npz_multi` (`split, npz_path, image_id`). With no
-  `DataConfig.splits`, each stage maps straight to that `split` column; for
-  `cu3s_multi` the CSV rows can also become the selector universe (and
-  `resolve-splits --from-csv` turns the CSV into a `splits.json`). `npz_multi` is
-  module-owned only (no selector path).
+- **CSV `split` column** is a convenience for `cu3s_multi` (`split, cu3s_path,
+  annotation_json, image_id`): the CSV rows can become the selector universe, and
+  `resolve-splits --from-csv` turns that CSV into a committable `splits.json`.
+  `npz_multi` is selector-only: a `splits.json` (`DataConfig.splits`) over a
+  `universe_csv` (`source, index, path`).
 
 ## Installation
 
@@ -68,17 +67,12 @@ The `cu3s` extra carries the Windows `cuvis-il<3.5.3` pin (the last build with a
 
 ### Cuvis SDK (system install, required for `cu3s`)
 
-The `[cu3s]` extra installs the `cuvis` Python package, but that is only a
-binding: the **C++ Cuvis SDK** must also be installed system-wide, or any
-`.cu3s` read fails at runtime.
-
-> **macOS not supported.** Cuvis SDK ships for Windows and Linux only. On macOS,
-> `.cu3s` reads fail at runtime; the `tiff_paired` module and any
-> numpy / video input still work.
-
-Obtain a build matching the `cuvis>=3.5.0` pin for your OS from the
-[Cuvis SDK download page](https://cubert-hyperspectral.github.io/cuvis.sdk/installation/),
-then verify:
+The `[cu3s]` extra installs the `cuvis` **binding** (with the Windows `cuvis-il<3.5.3` pin noted
+above), but that binding needs the system-wide **C++ Cuvis SDK** too, or any `.cu3s` read fails at
+runtime. See the
+[Cuvis.AI installation guide](https://docs.cuvis.ai/latest/get-started/installation/) for OS
+support (Windows / Linux; not macOS), the SDK download, and verification. Quick check once
+installed:
 
 ```bash
 uv run python -c "import cuvis; print(cuvis.__version__)"
@@ -130,23 +124,29 @@ Predictor(pipeline, dm).predict()
 
 ### NPZ (`npz_multi`)
 
-`npz_multi` loads one frame per compressed `.npz`, listed in a splits CSV. It needs
-no extras (numpy is a core dep) and no Cuvis SDK. Each `.npz` carries:
+`npz_multi` loads one frame per compressed `.npz`, selected by a `splits.json` over a
+`universe_csv` (a `universe.csv`). It needs no extras (numpy is a core dep) and no Cuvis SDK. Each `.npz` carries:
 
 - `cube`: `[H, W, C]` float32
 - `wavelengths`: `[C]` (cast to int32)
 - `mask` (optional): `[H, W]` int32 ground truth (zeros are emitted when absent)
+- `class_mask` (optional): `[H, W]` uint8 per-pixel COCO category id (0 = background)
 
-The CSV requires `split, npz_path, image_id` (extra columns are ignored); relative
-paths resolve against the CSV's directory. Each sample is
-`{cube, mask, wavelengths, mesu_index, frame_id}`. Unlike the cu3s modules,
-`npz_multi` honors `pin_memory` / `persistent_workers` /
-`worker_multiprocessing_context` (pure-CPU numpy loads benefit from them).
+The `universe_csv` requires `source, index, path` (optional `annotation, format, group`; extra
+columns are ignored); `path` is relative to the CSV and must not escape it via `..`. Each sample is
+`{cube, mask, class_mask, wavelengths, mesu_index, frame_id}`. Unlike the cu3s modules, `npz_multi`
+honors `pin_memory` / `persistent_workers` / `worker_multiprocessing_context` (pure-CPU numpy loads
+benefit from them).
 
 ```python
 from cuvis_ai_dataloader.data import MultiNpzDataModule
+from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
 
-dm = MultiNpzDataModule(splits_csv="splits.csv", batch_size=4, num_workers=4)
+splits = DataSplitConfig(
+    train=[Selector(kind=SelectorKind.FILE_INDICES, source="X.cu3s", ids=[0, 2, 3])],
+    val=[Selector(kind=SelectorKind.FILE_INDICES, source="X.cu3s", ids=[1, 5])],
+)
+dm = MultiNpzDataModule(splits=splits, universe_csv="universe.csv", batch_size=4, num_workers=4)
 dm.setup("fit")
 batch = next(iter(dm.train_dataloader()))  # cube [B,H,W,C], mask [B,H,W], ...
 ```
@@ -157,8 +157,13 @@ In a `DataConfig` (training / `restore-trainrun`):
 data:
   data_module: npz_multi
   batch_size: 4
+  splits:
+    train:
+      - { kind: file_indices, source: X.cu3s, ids: [0, 2, 3] }
+    val:
+      - { kind: file_indices, source: X.cu3s, ids: [1, 5] }
   params:
-    splits_csv: splits.csv
+    universe_csv: universe.csv
 ```
 
 ## Architecture

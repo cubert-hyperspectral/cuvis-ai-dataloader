@@ -160,11 +160,10 @@ def import_csv_splits(module) -> DataSplitConfig:
     outcome-equivalent to the CSV (same rows per stage), in canonical order.
     """
     _assert_index_addressable(
-        (rec["cu3s_path"], int(rec["read_index"]), int(rec["image_id"]))
-        for rec in module._rows  # noqa: SLF001 - same package, intentional
+        (rec["cu3s_path"], int(rec["read_index"]), int(rec["image_id"])) for rec in module.rows
     )
     stage_pairs: dict[str, list[tuple[str, int]]] = {"train": [], "val": [], "test": []}
-    for rec in module._rows:  # noqa: SLF001 - same package, intentional
+    for rec in module.rows:
         split = rec["split"]
         if split in stage_pairs:
             stage_pairs[split].append((rec["cu3s_path"], int(rec["read_index"])))
