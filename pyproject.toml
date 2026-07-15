@@ -23,8 +23,8 @@ keywords = [
     "machine-learning",
 ]
 dependencies = [
-    "cuvis-ai-core>=0.8.0",
-    "cuvis-ai-schemas>=0.6.0",
+    "cuvis-ai-core>=0.11.0",
+    "cuvis-ai-schemas>=0.8.0",
     "numpy",
     "torch",
     # Declared directly so the pytorch-cu128 source pin applies (uv only honors
@@ -88,11 +88,6 @@ include = ["cuvis_ai_dataloader*"]
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
-# TEMPORARY: samples_per_frame needs the base-module support from cuvis-ai-core #51, which is
-# merged to main but not yet in a PyPI release (latest is 0.10.1). Pin core to that merge commit
-# so CI resolves a base that has samples_per_frame. Remove this and bump the dependency floor to
-# a released cuvis-ai-core>=0.10.2 before this PR is merged.
-cuvis-ai-core = { git = "https://github.com/cubert-hyperspectral/cuvis-ai-core.git", rev = "4641c292bfc625301d0813e4ab9f9fdcfa77a10e" }
 # Local development alternative (uncomment to use a local checkout instead)
 # cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
 
