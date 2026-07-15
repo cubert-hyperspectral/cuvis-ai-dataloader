@@ -5,6 +5,12 @@ uses semantic versioning.
 
 ## [Unreleased]
 
+## 0.3.1 - 2026-07-15
+
+- Raised the `cuvis-ai-core` floor to `>=0.11.0` and `cuvis-ai-schemas` to `>=0.8.0` to adopt the
+  cuvis-ai-next release train (flat `TrainingConfig`, token-free sandboxed model cache, `splits.json`
+  data-split load). Dependency floors only; no API change.
+
 ## 0.3.0 - 2026-07-01
 
 - **Added `MultiNpzDataModule` (`data_module_name: npz_multi`).** A generic one-frame-per-file NPZ
