@@ -94,6 +94,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         splits_csv: str | None = None,
         processing_mode: str = "Reflectance",
         split: str | None = None,
+        samples_per_frame: int = 1,
         params: dict | None = None,
         # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
         # identity fixes the module). Any other unknown kwarg raises.
@@ -103,7 +104,13 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             splits_csv = splits_csv or params.get("splits_csv")
             processing_mode = params.get("processing_mode", processing_mode)
             split = split if split is not None else params.get("split")
-        super().__init__(splits=splits, batch_size=batch_size, num_workers=num_workers)
+            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
+        super().__init__(
+            splits=splits,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            samples_per_frame=samples_per_frame,
+        )
         if not splits_csv:
             raise ValueError("cu3s_multi requires 'splits_csv'.")
         self._splits_csv = Path(splits_csv).resolve()

@@ -71,6 +71,7 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
         wavelengths: Any = None,
         label_output_key: str = "label_rgb",
         label_mode: str = "rgb",
+        samples_per_frame: int = 1,
         params: dict | None = None,
         # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
         # identity fixes the module). Any other unknown kwarg raises.
@@ -83,7 +84,13 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
             wavelengths = wavelengths if wavelengths is not None else params.get("wavelengths")
             label_output_key = params.get("label_output_key", label_output_key)
             label_mode = params.get("label_mode", label_mode)
-        super().__init__(splits=splits, batch_size=batch_size, num_workers=num_workers)
+            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
+        super().__init__(
+            splits=splits,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            samples_per_frame=samples_per_frame,
+        )
         self.images_dir = Path(images_dir) if images_dir else None
         self.labels_dir = Path(labels_dir) if labels_dir else None
         self.globs = (

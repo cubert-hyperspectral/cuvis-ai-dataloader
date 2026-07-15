@@ -125,6 +125,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         # Folder source: a data_dir without dataset_name globs *.{glob} into one ordered
         # universe; selectors then index into it.
         glob: Any = None,
+        samples_per_frame: int = 1,
         params: dict | None = None,
         # Carried by the nested `cls(**cfg.data)` shape; the class identity already fixes
         # the module, so it is accepted and ignored. Any other unknown kwarg raises.
@@ -142,7 +143,13 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             data_dir = data_dir or params.get("data_dir")
             dataset_name = dataset_name or params.get("dataset_name")
             glob = glob if glob is not None else params.get("glob")
-        super().__init__(splits=splits, batch_size=batch_size, num_workers=num_workers)
+            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
+        super().__init__(
+            splits=splits,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            samples_per_frame=samples_per_frame,
+        )
 
         if cu3s_file_path is None and data_dir and dataset_name:
             cu3s_file_path = str(Path(data_dir) / f"{dataset_name}.cu3s")

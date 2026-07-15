@@ -87,6 +87,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         pin_memory: bool = False,
         persistent_workers: bool = False,
         worker_multiprocessing_context: str = "spawn",
+        samples_per_frame: int = 1,
         params: dict | None = None,
         # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
         # identity fixes the module). Any other unknown kwarg raises.
@@ -100,7 +101,13 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
             worker_multiprocessing_context = params.get(
                 "worker_multiprocessing_context", worker_multiprocessing_context
             )
-        super().__init__(splits=splits, batch_size=batch_size, num_workers=num_workers)
+            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
+        super().__init__(
+            splits=splits,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            samples_per_frame=samples_per_frame,  # multiplicity handled by the base
+        )
         if not splits_csv:
             raise ValueError("npz_multi requires 'splits_csv'.")
         self._splits_csv = Path(splits_csv).resolve()
@@ -127,6 +134,8 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         # DataConfig.splits is None: predict honors --data-arg split (default test).
         split = (self._predict_split or "test") if stage == "predict" else stage
         rows = [r for r in self._rows if split == "all" or r["split"] == split]
+        # samples_per_frame multiplicity is applied by the base train_dataloader
+        # (train split only), so build_stage_dataset just returns the unique frames.
         ds = _MultiNpzDataset(rows)
         logger.info("npz_multi {} dataset: {} frames", stage, len(ds))
         return ds
