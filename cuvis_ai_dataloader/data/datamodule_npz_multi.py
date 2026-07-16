@@ -28,6 +28,14 @@ Set ``crop_size=(h, w)`` to crop each TRAIN sample to a foreground-biased patch 
 (``__getitem__``), shipping ~patch-sized samples instead of whole frames — a large I/O win when the
 model trains on crops. ``crop_fg_percent`` / ``crop_fg_labels`` tune the oversampling. Off by
 default (whole frames, unchanged); val/test/predict always see whole frames for tiled inference.
+
+.. note::
+   The crop is applied in the dataset, i.e. **upstream of the consuming pipeline**. Any downstream
+   transform that *fits statistics* over the training data — e.g. a z-score normalizer with
+   dataset-level running stats — will therefore fit them on the **cropped patches, not the full
+   frames**, and eval (full frames) is then normalized with crop-fit stats. With global z-score
+   this only shifts the fitted mean/std (arguably more representative of what the model trains on),
+   but if full-frame statistics matter, fit them before enabling ``crop_size``.
 """
 
 from __future__ import annotations
