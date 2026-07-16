@@ -90,10 +90,16 @@ class _MultiNpzDataset(Dataset):
     def __len__(self) -> int:
         return len(self._rows)
 
-    def __getitem__(self, idx: int) -> dict[str, np.ndarray | int]:
+    def _read(self, idx: int):
+        """Read one frame's arrays; the cube is kept in its STORED dtype (NOT expanded to f32).
+
+        Returns ``(rec, cube, wavelengths, mask, class_mask)``. Keeping the cube un-expanded lets a
+        caller crop first and cast only the patch to float32 (see ``_CropDataset``), skipping the
+        full-frame f32 expansion. The whole-frame path (``__getitem__``) expands the cube itself.
+        """
         rec = self._rows[idx]
         with np.load(rec["path"]) as z:
-            cube = np.asarray(z["cube"], dtype=np.float32)
+            cube = np.asarray(z["cube"])  # stored dtype (e.g. float16); NOT expanded to f32 here
             wavelengths = np.asarray(z["wavelengths"]).ravel().astype(np.int32, copy=False)
             mask = (
                 np.asarray(z["mask"], dtype=np.int32)
@@ -108,8 +114,12 @@ class _MultiNpzDataset(Dataset):
                 if "class_mask" in z.files
                 else np.zeros((cube.shape[0], cube.shape[1]), dtype=np.uint8)
             )
+        return rec, cube, wavelengths, mask, class_mask
+
+    def __getitem__(self, idx: int) -> dict[str, np.ndarray | int]:
+        rec, cube, wavelengths, mask, class_mask = self._read(idx)
         return {
-            "cube": cube,
+            "cube": np.asarray(cube, dtype=np.float32),  # whole-frame path: expand the full cube
             "mask": mask,
             "class_mask": class_mask,
             "wavelengths": wavelengths,
@@ -123,10 +133,14 @@ class _CropDataset(Dataset):
 
     Each ``__getitem__`` crops the underlying frame's ``cube`` / ``mask`` / ``class_mask`` to
     ``size`` with a fresh window (see :func:`fg_crop_window`), so with ``samples_per_frame=N`` the
-    N visits to a frame yield N *independent* patches. Only the small patch (not the whole frame)
-    is returned, so workers ship ~patch-sized samples over the collation boundary. The RNG is
-    seeded from ``torch.initial_seed()`` (distinct per DataLoader worker) so workers don't draw
-    correlated crops.
+    N visits to a frame yield N *independent* patches. The cube is cropped in its stored dtype and
+    only the patch is cast to float32 (the whole-frame f32 expansion is skipped), and only that
+    patch crosses the collation boundary. The RNG is seeded from ``torch.initial_seed()`` (distinct
+    per DataLoader worker) so workers don't draw correlated crops.
+
+    NOTE: this reads the whole frame from disk (npz members can't be partially read); it saves the
+    f32 expansion + the transfer, not the read. Removing the redundant per-``samples_per_frame``
+    reads needs a decoded-frame cache or mmap-able raw ``.npy`` (see ALL-5905 follow-ups).
     """
 
     def __init__(
@@ -160,22 +174,26 @@ class _CropDataset(Dataset):
         return self._rng
 
     def __getitem__(self, idx: int) -> dict[str, np.ndarray | int]:
-        item = dict(self._base[idx])
+        # Read the frame with the cube in its STORED dtype (e.g. float16), pick the window from the
+        # mask, then crop and cast ONLY the patch to float32. This skips the whole-frame f32
+        # expansion (~30x less to allocate/convert per sample) and ships only the patch downstream.
+        rec, cube, wavelengths, mask, class_mask = self._base._read(idx)
         top, left = fg_crop_window(
-            item["mask"],
+            mask,
             self._size,
             fg_percent=self._fg_percent,
             fg_labels=self._fg_labels,
             rng=self._generator(),
         )
         out_h, out_w = self._size
-        # Copy the crop so the full frame is freed and only the patch crosses the worker boundary.
-        item["cube"] = np.ascontiguousarray(item["cube"][top : top + out_h, left : left + out_w, :])
-        item["mask"] = np.ascontiguousarray(item["mask"][top : top + out_h, left : left + out_w])
-        item["class_mask"] = np.ascontiguousarray(
-            item["class_mask"][top : top + out_h, left : left + out_w]
-        )
-        return item
+        return {
+            "cube": cube[top : top + out_h, left : left + out_w, :].astype(np.float32),
+            "mask": np.ascontiguousarray(mask[top : top + out_h, left : left + out_w]),
+            "class_mask": np.ascontiguousarray(class_mask[top : top + out_h, left : left + out_w]),
+            "wavelengths": wavelengths,
+            "mesu_index": int(rec["index"]),
+            "frame_id": int(rec["frame_id"]),
+        }
 
 
 class MultiNpzDataModule(BaseCuvisAIDataModule):
