@@ -3,6 +3,10 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## [Unreleased]
+
+- Added an optional foreground-biased **crop inside the dataset** to `MultiNpzDataModule`: set `crop_size=(h, w)` to crop each **train** sample to a patch in `__getitem__` (nnU-Net-style foreground oversampling, tuned by `crop_fg_percent` / `crop_fg_labels`), so workers ship ~patch-sized samples instead of whole frames — a large I/O win when the model trains on crops. Composes with `samples_per_frame=N` to yield N independent patches per frame. The cube is cropped in its stored dtype and only the patch is cast to float32, skipping the whole-frame f32 expansion. Off by default (whole frames, byte-for-byte unchanged); val/test/predict always see whole frames for tiled inference.
+
 ## 0.4.0 - 2026-07-15
 
 - Added `samples_per_frame: int = 1` to `MultiNpzDataModule`: index-level duplication of the train rows so each frame yields N independent samples per epoch (downstream per-sample transforms such as random crops draw fresh for every occurrence; the shuffled loader interleaves duplicates across the epoch). Val/test/predict are never expanded.
