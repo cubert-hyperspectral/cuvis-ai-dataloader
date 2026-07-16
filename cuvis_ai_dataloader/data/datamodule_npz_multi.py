@@ -23,6 +23,11 @@ Each ``.npz`` carries:
 Unlike the cu3s modules, this module honors the DataLoader options ``pin_memory`` /
 ``persistent_workers`` / ``worker_multiprocessing_context``: NPZ reads are pure-CPU numpy loads
 where those measurably help throughput.
+
+Set ``crop_size=(h, w)`` to crop each TRAIN sample to a foreground-biased patch inside the dataset
+(``__getitem__``), shipping ~patch-sized samples instead of whole frames — a large I/O win when the
+model trains on crops. ``crop_fg_percent`` / ``crop_fg_labels`` tune the oversampling. Off by
+default (whole frames, unchanged); val/test/predict always see whole frames for tiled inference.
 """
 
 from __future__ import annotations
@@ -32,9 +37,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
+import torch
 from torch.utils.data import DataLoader, Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
+from cuvis_ai_dataloader.data._crop import fg_crop_window
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cuvis_ai_schemas.training.data import SampleRef
@@ -103,6 +110,66 @@ class _MultiNpzDataset(Dataset):
         }
 
 
+class _CropDataset(Dataset):
+    """Wrap a frame dataset to return a foreground-biased crop per access (train split only).
+
+    Each ``__getitem__`` crops the underlying frame's ``cube`` / ``mask`` / ``class_mask`` to
+    ``size`` with a fresh window (see :func:`fg_crop_window`), so with ``samples_per_frame=N`` the
+    N visits to a frame yield N *independent* patches. Only the small patch (not the whole frame)
+    is returned, so workers ship ~patch-sized samples over the collation boundary. The RNG is
+    seeded from ``torch.initial_seed()`` (distinct per DataLoader worker) so workers don't draw
+    correlated crops.
+    """
+
+    def __init__(
+        self,
+        base: Dataset,
+        size: tuple[int, int],
+        fg_percent: float,
+        fg_labels: list[int] | None,
+    ) -> None:
+        self._base = base
+        self._size = size
+        self._fg_percent = fg_percent
+        self._fg_labels = fg_labels
+        self._rng: np.random.Generator | None = None
+        # cu3s parity: forward the wavelength axis consumers read off the dataset.
+        self.wavelengths_nm = getattr(base, "wavelengths_nm", np.array([], dtype=np.int32))
+        self.num_channels = getattr(base, "num_channels", 0)
+
+    @property
+    def rows(self) -> list[dict]:
+        """Per-frame rows of the wrapped dataset (unchanged by cropping)."""
+        return self._base.rows
+
+    def __len__(self) -> int:
+        return len(self._base)
+
+    def _generator(self) -> np.random.Generator:
+        """Lazily build a per-worker RNG (distinct seed per DataLoader worker)."""
+        if self._rng is None:
+            self._rng = np.random.default_rng(torch.initial_seed())
+        return self._rng
+
+    def __getitem__(self, idx: int) -> dict[str, np.ndarray | int]:
+        item = dict(self._base[idx])
+        top, left = fg_crop_window(
+            item["mask"],
+            self._size,
+            fg_percent=self._fg_percent,
+            fg_labels=self._fg_labels,
+            rng=self._generator(),
+        )
+        out_h, out_w = self._size
+        # Copy the crop so the full frame is freed and only the patch crosses the worker boundary.
+        item["cube"] = np.ascontiguousarray(item["cube"][top : top + out_h, left : left + out_w, :])
+        item["mask"] = np.ascontiguousarray(item["mask"][top : top + out_h, left : left + out_w])
+        item["class_mask"] = np.ascontiguousarray(
+            item["class_mask"][top : top + out_h, left : left + out_w]
+        )
+        return item
+
+
 class MultiNpzDataModule(BaseCuvisAIDataModule):
     """Multi-file NPZ DataModule driven by a core ``splits.json`` over a ``universe_csv`` (universe.csv)."""
 
@@ -119,6 +186,9 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         persistent_workers: bool = False,
         worker_multiprocessing_context: str = "spawn",
         samples_per_frame: int = 1,
+        crop_size: tuple[int, int] | None = None,
+        crop_fg_percent: float = 0.33,
+        crop_fg_labels: list[int] | None = None,
         params: dict | None = None,
         # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
         # identity fixes the module). Any other unknown kwarg raises.
@@ -132,6 +202,9 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
                 "worker_multiprocessing_context", worker_multiprocessing_context
             )
             samples_per_frame = params.get("samples_per_frame", samples_per_frame)
+            crop_size = params.get("crop_size", crop_size)
+            crop_fg_percent = params.get("crop_fg_percent", crop_fg_percent)
+            crop_fg_labels = params.get("crop_fg_labels", crop_fg_labels)
         super().__init__(
             splits=splits,
             batch_size=batch_size,
@@ -141,6 +214,21 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         self._pin_memory = bool(pin_memory)
         self._persistent_workers = bool(persistent_workers)
         self._worker_multiprocessing_context = worker_multiprocessing_context
+
+        # Optional foreground-biased crop applied inside the dataset on the TRAIN split only
+        # (see train_dataloader). Default (crop_size=None) ships whole frames, unchanged.
+        if crop_size is not None:
+            try:
+                crop_size = tuple(int(x) for x in crop_size)
+            except TypeError:
+                raise ValueError(f"crop_size must be an (h, w) pair, got {crop_size!r}") from None
+            if len(crop_size) != 2 or any(s <= 0 for s in crop_size):
+                raise ValueError(f"crop_size must be a pair of positive ints, got {crop_size!r}")
+        if not 0.0 <= float(crop_fg_percent) <= 1.0:
+            raise ValueError(f"crop_fg_percent must be in [0, 1], got {crop_fg_percent!r}")
+        self._crop_size = crop_size
+        self._crop_fg_percent = float(crop_fg_percent)
+        self._crop_fg_labels = None if crop_fg_labels is None else [int(x) for x in crop_fg_labels]
 
         if not universe_csv:
             raise ValueError("npz_multi requires 'universe_csv' (the universe.csv lookup).")
@@ -214,6 +302,25 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
     def category_name_to_id(self) -> dict[str, int] | None:
         """NPZ frames bake masks in; no COCO category name->id map is available."""
         return None
+
+    def train_dataloader(self) -> DataLoader:
+        """Train loader; when ``crop_size`` is set, ship foreground-biased patches (train only).
+
+        Wraps the train dataset in :class:`_CropDataset` *before* the base applies
+        ``samples_per_frame`` multiplicity, so ``samples_per_frame=N`` yields N independent patches
+        per frame. Val/test/predict loaders are inherited unchanged (whole frames), so tiled
+        full-frame evaluation is unaffected. ``crop_size=None`` (default) is a plain passthrough.
+        """
+        if self._crop_size is None or self._train_ds is None:
+            return super().train_dataloader()
+        base_train = self._train_ds
+        self._train_ds = _CropDataset(
+            base_train, self._crop_size, self._crop_fg_percent, self._crop_fg_labels
+        )
+        try:
+            return super().train_dataloader()
+        finally:
+            self._train_ds = base_train
 
     def _loader(self, dataset: Dataset | None, *, shuffle: bool, name: str) -> DataLoader:
         """Like the base loader, but honor pin_memory / persistent_workers / mp-context."""

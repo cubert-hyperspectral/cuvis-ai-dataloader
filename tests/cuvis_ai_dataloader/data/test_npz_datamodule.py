@@ -305,3 +305,144 @@ def test_samples_per_frame_validation(tmp_path):
         MultiNpzDataModule(
             splits=_split_cfg(train=[0]), universe_csv=str(universe), samples_per_frame=0
         )
+
+
+# --------------------------------------------------------------------------- crop-in-dataset
+def _write_gradient_npz(path: Path, h: int = 8, w: int = 10, c: int = 5) -> None:
+    """Write a frame whose cube encodes position (``cube[y, x, :] == y*100 + x``) + empty mask.
+
+    A position-encoding cube lets a test tell crops apart by their top-left value, since the
+    default fixture cube is all zeros (indistinguishable across offsets).
+    """
+    cube = np.tile(
+        (np.arange(h)[:, None] * 100 + np.arange(w)[None, :]).astype(np.float32)[..., None],
+        (1, 1, c),
+    )
+    np.savez(
+        path,
+        cube=cube,
+        wavelengths=np.linspace(450, 850, c).astype(np.float32),
+        mask=np.zeros((h, w), dtype=np.int32),
+    )
+
+
+def test_fg_crop_window_in_bounds_hits_fg_and_rejects_oversize():
+    from cuvis_ai_dataloader.data._crop import fg_crop_window
+
+    rng = np.random.default_rng(0)
+    mask = np.zeros((8, 10), dtype=np.int32)
+    mask[2:5, 3:7] = 1
+    top, left = fg_crop_window(mask, (4, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+    assert 0 <= top <= 4 and 0 <= left <= 4  # clamped in-bounds
+    assert mask[top : top + 4, left : left + 6].max() > 0  # foreground-centered window hits object
+    with pytest.raises(ValueError, match="exceeds"):
+        fg_crop_window(mask, (9, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+
+
+def test_crop_default_off_ships_full_frame(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0, 1]), universe_csv=str(universe), batch_size=1, num_workers=0
+    )
+    dm.setup(stage="fit")
+    batch = next(iter(dm.train_dataloader()))
+    assert batch["cube"].shape == (1, 8, 10, 5)  # whole frame, unchanged
+
+
+def test_crop_train_ships_patch(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0, 1]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    batch = next(iter(dm.train_dataloader()))
+    assert batch["cube"].shape == (1, 4, 6, 5)
+    assert batch["mask"].shape == (1, 4, 6)
+    assert batch["class_mask"].shape == (1, 4, 6)
+
+
+def test_crop_not_applied_to_val_and_test(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0], val=[1], test=[2]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    dm.setup(stage="test")
+    assert next(iter(dm.train_dataloader()))["cube"].shape == (1, 4, 6, 5)  # cropped
+    assert next(iter(dm.val_dataloader()))["cube"].shape == (1, 8, 10, 5)  # full frame
+    assert next(iter(dm.test_dataloader()))["cube"].shape == (1, 8, 10, 5)  # full frame
+
+
+def test_crop_with_samples_per_frame_yields_independent_patches(tmp_path):
+    _write_gradient_npz(tmp_path / "f0.npz")
+    universe = tmp_path / "universe.csv"
+    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\n")
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        crop_fg_percent=0.0,  # uniform offsets so patches vary by position
+        samples_per_frame=8,
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    assert len(dm.train_ds) == 1  # property stays the unwrapped frame count
+    rep = dm.train_dataloader().dataset
+    assert len(rep) == 8  # 1 frame x 8 samples
+    # cube[0,0,0] == top*100 + left, so distinct top-left values prove independent crop offsets.
+    offsets = {int(rep[i]["cube"][0, 0, 0]) for i in range(len(rep))}
+    assert len(offsets) > 1
+
+
+def test_crop_foreground_biased_hits_object(tmp_path):
+    _write_npz(tmp_path / "f0.npz", with_mask=True)  # mask block [2:5, 3:7] = 2
+    universe = tmp_path / "universe.csv"
+    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\n")
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        crop_fg_percent=1.0,  # every crop centers on the object
+        samples_per_frame=5,
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    rep = dm.train_dataloader().dataset
+    assert all(int(rep[i]["mask"].max()) > 0 for i in range(len(rep)))  # crop always contains fg
+
+
+def test_crop_via_params_dict(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0, 1]),
+        params={"universe_csv": str(universe), "crop_size": (4, 6)},
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    assert next(iter(dm.train_dataloader()))["cube"].shape == (1, 4, 6, 5)
+
+
+def test_crop_size_validation(tmp_path):
+    universe = _write_universe(tmp_path)
+    with pytest.raises(ValueError, match="crop_size"):
+        MultiNpzDataModule(
+            splits=_split_cfg(train=[0]), universe_csv=str(universe), crop_size=(0, 6)
+        )
+
+
+def test_crop_fg_percent_validation(tmp_path):
+    universe = _write_universe(tmp_path)
+    with pytest.raises(ValueError, match="crop_fg_percent"):
+        MultiNpzDataModule(
+            splits=_split_cfg(train=[0]), universe_csv=str(universe), crop_fg_percent=1.5
+        )
