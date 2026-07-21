@@ -299,6 +299,21 @@ def test_samples_per_frame_via_params_dict(tmp_path):
     assert len(dm.train_dataloader().dataset) == 4  # 2 frames x 2
 
 
+def test_nested_cfg_data_construction(tmp_path):
+    # `MultiNpzDataModule(**cfg.data)` with the full nested DataConfig shape (data_module +
+    # splits + params) must work; `data_module` is dropped and params spliced onto the flat sig.
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        data_module="npz_multi",
+        splits=_split_cfg(train=[0, 1]),
+        batch_size=1,
+        num_workers=0,
+        params={"universe_csv": str(universe)},
+    )
+    dm.setup(stage="fit")
+    assert len(dm.train_ds) == 2
+
+
 def test_samples_per_frame_validation(tmp_path):
     universe = _write_universe(tmp_path)
     with pytest.raises(ValueError, match="samples_per_frame"):

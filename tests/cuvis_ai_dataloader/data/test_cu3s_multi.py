@@ -43,6 +43,19 @@ def test_unknown_kwarg_raises():
         MultiCu3sDataModule(splits_csv="x.csv", bogus=1)
 
 
+def test_nested_cfg_data_construction(mock_cuvis_sdk, tmp_path):
+    # `MultiCu3sDataModule(**cfg.data)` with the nested DataConfig shape (data_module +
+    # params) must work for config-driven call sites; `data_module` is dropped, params spliced.
+    csv_path = _write_dataset(tmp_path)
+    dm = MultiCu3sDataModule(
+        data_module="cu3s_multi",
+        batch_size=1,
+        num_workers=0,
+        params={"splits_csv": str(csv_path)},
+    )
+    assert len(dm._rows) == 3
+
+
 def test_csv_parsing_resolves_paths_and_frame_ids(mock_cuvis_sdk, tmp_path):
     csv_path = _write_dataset(tmp_path)
     dm = MultiCu3sDataModule(splits_csv=str(csv_path))

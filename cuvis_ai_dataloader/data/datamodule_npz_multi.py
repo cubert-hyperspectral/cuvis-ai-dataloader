@@ -36,6 +36,8 @@ from torch.utils.data import DataLoader, Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 
+from ._extras import accepts_data_config
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cuvis_ai_schemas.training.data import SampleRef
 
@@ -108,6 +110,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
 
     DATA_MODULE_NAME: ClassVar[str] = "npz_multi"
 
+    @accepts_data_config
     def __init__(
         self,
         *,
@@ -119,19 +122,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         persistent_workers: bool = False,
         worker_multiprocessing_context: str = "spawn",
         samples_per_frame: int = 1,
-        params: dict | None = None,
-        # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
-        # identity fixes the module). Any other unknown kwarg raises.
-        data_module: str | None = None,
     ) -> None:
-        if params:
-            universe_csv = universe_csv or params.get("universe_csv")
-            pin_memory = params.get("pin_memory", pin_memory)
-            persistent_workers = params.get("persistent_workers", persistent_workers)
-            worker_multiprocessing_context = params.get(
-                "worker_multiprocessing_context", worker_multiprocessing_context
-            )
-            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
         super().__init__(
             splits=splits,
             batch_size=batch_size,
