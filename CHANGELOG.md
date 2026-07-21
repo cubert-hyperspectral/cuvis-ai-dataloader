@@ -3,6 +3,24 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## [Unreleased]
+
+- **`cu3s` folder mode gained per-measurement enumeration (`frames: measurements`) + `recursive`.**
+  Folder sources can now enumerate one sample per measurement per file (canonical absolute
+  `Path.resolve().as_posix()` sources, sibling `<stem>.json` COCO attached, uid = `source#index`),
+  which is the contract for externally authored `splits.json` (the CuvisNEXT split designer);
+  `recursive: true` walks per-day subfolders. Default `frames: file` keeps the legacy
+  one-ref-per-file-at-measurement-0 behavior. Documented in the README ("GUI-authored splits over
+  a cu3s folder"), pinned by the committed golden fixture
+  `tests/cuvis_ai_dataloader/fixtures/gui_authored_splits.json` (shared byte-for-byte with the
+  CuvisNEXT test suite; its `universe_hash` is the shared sha256 test vector).
+- **`cu3s` now refuses split-less training stages.** `setup("fit"/"validate"/"test")` with no
+  `DataConfig.splits` raises instead of silently iterating the whole universe, which let
+  statistical initialization (e.g. MinMax) ingest anomalous frames with no error; split-less
+  `setup("predict")` (and `setup()` building only the predict dataset) keeps serving the whole
+  universe. Breaking for pipelines that trained a cu3s source without splits — add a `splits`
+  block (e.g. a frozen `splits.json` via `splits_path`).
+
 ## 0.4.0 - 2026-07-15
 
 - Added `samples_per_frame: int = 1` to `MultiNpzDataModule`: index-level duplication of the train rows so each frame yields N independent samples per epoch (downstream per-sample transforms such as random crops draw fresh for every occurrence; the shuffled loader interleaves duplicates across the epoch). Val/test/predict are never expanded.

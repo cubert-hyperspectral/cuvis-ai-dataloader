@@ -243,3 +243,63 @@ def test_folder_unknown_selector_raises(mock_cuvis_sdk, tmp_path):
     )
     with pytest.raises(ValueError, match="matched 0 samples"):
         dm.setup(stage="fit")
+
+
+def test_splitless_training_stages_refused(mock_cuvis_sdk, tmp_path):
+    # Without DataConfig.splits, fit/validate/test would silently feed the whole universe
+    # (incl. anomalous frames) into statistical init; the module refuses instead.
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path))
+    for stage in ("fit", "validate", "test"):
+        with pytest.raises(ValueError, match="does not own split semantics"):
+            dm.setup(stage=stage)
+
+
+def test_splitless_setup_none_builds_predict_only(mock_cuvis_sdk, tmp_path):
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path))
+    dm.setup()  # stage=None: whole-universe predict is the one valid split-less dataset
+    assert len(dm._predict_ds) == 7
+    assert dm._train_ds is None and dm._val_ds is None and dm._test_ds is None
+
+
+def test_folder_frames_measurements_enumerates_per_measurement(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=2)
+    dm = Cu3sDataModule(data_dir=str(folder), frames="measurements")
+    refs = dm.enumerate()
+    assert len(refs) == 2 * 7  # mock session has 7 measurements per file
+    assert [r.index for r in refs[:7]] == list(range(7))
+    assert all("\\" not in r.source for r in refs)  # canonical forward-slash sources
+
+
+def test_folder_frames_file_default_unchanged(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=3)
+    refs = Cu3sDataModule(data_dir=str(folder)).enumerate()
+    assert [(r.index, r.label_id) for r in refs] == [(0, 0)] * 3  # legacy one-ref-per-file
+
+
+def test_folder_recursive_walks_subfolders(mock_cuvis_sdk, tmp_path):
+    root = tmp_path / "dataset"
+    for rel in ("day2/a.cu3s", "day3/b.cu3s"):
+        f = root / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"")
+    dm = Cu3sDataModule(data_dir=str(root), frames="measurements", recursive=True)
+    assert len(dm.enumerate()) == 2 * 7
+    with pytest.raises(FileNotFoundError):
+        Cu3sDataModule(data_dir=str(root)).enumerate()  # non-recursive finds nothing
+
+
+def test_frames_param_via_nested_params(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=2)
+    dm = Cu3sDataModule(params={"data_dir": str(folder), "frames": "measurements"})
+    assert dm.frames == "measurements"
+    assert len(dm.enumerate()) == 2 * 7
+
+
+def test_invalid_frames_rejected(tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=1)
+    with pytest.raises(ValueError, match="frames"):
+        Cu3sDataModule(data_dir=str(folder), frames="frame")
+    with pytest.raises(ValueError, match="frames"):
+        Cu3sDataModule.validate_params({"data_dir": str(folder), "frames": "frame"})
+    with pytest.raises(ValueError, match="recursive"):
+        Cu3sDataModule.validate_params({"data_dir": str(folder), "recursive": "yes-please"})
