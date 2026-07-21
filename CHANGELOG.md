@@ -5,6 +5,17 @@ uses semantic versioning.
 
 ## [Unreleased]
 
+- **DataModule constructors de-bloated: nested `DataConfig` handling centralized, three dead
+  `cu3s` args removed.** A shared `accepts_data_config` decorator (`data/_extras.py`) now owns the
+  `DataModule(**cfg.data)` nested-shape normalization (drops the redundant `data_module`, splices
+  `params` onto the flat signature), replacing the duplicated `params`/`data_module`/`if params:`
+  block in all four modules (`cu3s`, `cu3s_multi`, `npz_multi`, `tiff_paired`); behavior is
+  unchanged for every real call shape. `Cu3sDataModule` drops three unused constructor args:
+  `normalize_to_unit` (was accepted but inert), `dataset_name` (the `data_dir` + `dataset_name`
+  single-file composition), and `glob` (cu3s folder mode is always `*.cu3s`). An unrecognized key
+  inside `params` now raises `TypeError` instead of being silently dropped, matching the flat-path
+  loud-rejection. Breaking only for callers that passed one of the three removed args (they now
+  fail loudly at construction); no shipped config used them.
 - **`cu3s` folder mode gained per-measurement enumeration (`frames: measurements`) + `recursive`.**
   Folder sources can now enumerate one sample per measurement per file (canonical absolute
   `Path.resolve().as_posix()` sources, sibling `<stem>.json` COCO attached, uid = `source#index`),

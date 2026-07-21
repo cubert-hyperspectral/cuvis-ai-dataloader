@@ -30,7 +30,7 @@ from torch.utils.data import Dataset
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule, DataStage
 from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef
 
-from ._extras import parse_bool, parse_int_list, parse_str_list
+from ._extras import accepts_data_config, parse_bool, parse_int_list
 from .readers.cu3s_reader import Cu3sCubeReader
 
 
@@ -117,6 +117,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
 
     DATA_MODULE_NAME: ClassVar[str] = "cu3s"
 
+    @accepts_data_config
     def __init__(
         self,
         *,
@@ -127,13 +128,9 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         annotation_json_path: str | None = None,
         processing_mode: str = "Reflectance",
         measurement_indices: Any = None,
-        normalize_to_unit: Any = False,
-        # Back-compat asset-resolution convenience.
+        # Folder source: a data_dir (no single file) lists *.cu3s into one ordered universe;
+        # selectors then index into it.
         data_dir: str | None = None,
-        dataset_name: str | None = None,
-        # Folder source: a data_dir without dataset_name globs *.{glob} into one ordered
-        # universe; selectors then index into it.
-        glob: Any = None,
         # Folder-mode granularity: "file" = one sample per file at measurement 0 (legacy
         # default); "measurements" = one sample per measurement with canonical absolute
         # sources (the GUI-authored-splits contract). Single-file mode is always
@@ -141,26 +138,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         frames: str = "file",
         recursive: Any = False,
         samples_per_frame: int = 1,
-        params: dict | None = None,
-        # Carried by the nested `cls(**cfg.data)` shape; the class identity already fixes
-        # the module, so it is accepted and ignored. Any other unknown kwarg raises.
-        data_module: str | None = None,
     ) -> None:
-        # Support `Cu3sDataModule(**cfg.data)` where cfg.data is the nested DataConfig shape
-        # {data_module, splits, params, batch_size}: pull module values out of params.
-        if params:
-            cu3s_file_path = cu3s_file_path or params.get("cu3s_file_path")
-            annotation_json_path = annotation_json_path or params.get("annotation_json_path")
-            processing_mode = params.get("processing_mode", processing_mode)
-            if measurement_indices is None:
-                measurement_indices = params.get("measurement_indices")
-            normalize_to_unit = params.get("normalize_to_unit", normalize_to_unit)
-            data_dir = data_dir or params.get("data_dir")
-            dataset_name = dataset_name or params.get("dataset_name")
-            glob = glob if glob is not None else params.get("glob")
-            frames = params.get("frames", frames)
-            recursive = params.get("recursive", recursive)
-            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
         super().__init__(
             splits=splits,
             batch_size=batch_size,
@@ -168,17 +146,10 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             samples_per_frame=samples_per_frame,
         )
 
-        if cu3s_file_path is None and data_dir and dataset_name:
-            cu3s_file_path = str(Path(data_dir) / f"{dataset_name}.cu3s")
         self.cu3s_file_path = str(cu3s_file_path) if cu3s_file_path else None
         self.data_dir = Path(data_dir) if (self.cu3s_file_path is None and data_dir) else None
-        self.cu3s_globs: list[str] | None = None
-        if self.data_dir is not None:
-            self.cu3s_globs = (
-                parse_str_list(glob, key="glob")
-                if isinstance(glob, str)
-                else (list(glob) if glob else ["cu3s"])
-            )
+        # Folder mode reads *.cu3s; kept as a list so _list_folder_files stays generic.
+        self.cu3s_globs: list[str] | None = ["cu3s"] if self.data_dir is not None else None
         frames = str(frames or "file")
         if frames not in ("file", "measurements"):
             raise ValueError(f"frames must be 'file' or 'measurements', got {frames!r}")
@@ -195,12 +166,6 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             if isinstance(measurement_indices, str)
             else measurement_indices
         )
-        # Accepted for compatibility; currently inert (never applied to the cube).
-        self.normalize_to_unit = (
-            parse_bool(normalize_to_unit, key="normalize_to_unit")
-            if isinstance(normalize_to_unit, str)
-            else bool(normalize_to_unit)
-        )
         self._enum_labelers: dict[str, Any] = {}
 
     @staticmethod
@@ -208,34 +173,23 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         """Validate cu3s params: a file (or folder) source exists and any annotation is JSON."""
         cu3s = params.get("cu3s_file_path")
         data_dir = params.get("data_dir")
-        dataset_name = params.get("dataset_name")
         frames = params.get("frames", "file")
         if frames not in ("file", "measurements"):
             raise ValueError(f"frames must be 'file' or 'measurements', got {frames!r}")
         if not cu3s and not data_dir:
             raise ValueError(
-                "cu3s requires 'cu3s_file_path', or 'data_dir' (a folder of .cu3s files, "
-                "optionally with 'dataset_name' for a single named file), in params."
+                "cu3s requires 'cu3s_file_path', or 'data_dir' (a folder of .cu3s files), "
+                "in params."
             )
         if cu3s:
             if not str(cu3s).endswith(".cu3s"):
                 raise ValueError(f"cu3s_file_path must end with .cu3s: {cu3s!r}")
             if not os.path.exists(cu3s):
                 raise ValueError(f"cu3s_file_path does not exist: {cu3s}")
-        elif dataset_name:
-            named = Path(data_dir) / f"{dataset_name}.cu3s"
-            if not named.exists():
-                raise ValueError(f"cu3s file does not exist: {named}")
         else:
             folder = Path(data_dir)
             if not folder.is_dir():
                 raise ValueError(f"data_dir does not exist or is not a directory: {data_dir}")
-            glob = params.get("glob") or "cu3s"
-            exts = (
-                [e.strip().lstrip(".") for e in str(glob).split(",") if e.strip()]
-                if isinstance(glob, str)
-                else [str(e).lstrip(".") for e in glob]
-            )
             recursive = params.get("recursive", False)
             recursive = (
                 parse_bool(recursive, key="recursive")
@@ -243,8 +197,8 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
                 else bool(recursive)
             )
             find = folder.rglob if recursive else folder.glob
-            if not any(any(find(f"*.{e}")) for e in exts):
-                raise ValueError(f"data_dir holds no *.{exts} files: {data_dir}")
+            if not any(find("*.cu3s")):
+                raise ValueError(f"data_dir holds no *.cu3s files: {data_dir}")
         ann = params.get("annotation_json_path")
         if ann:
             if not str(ann).endswith(".json"):

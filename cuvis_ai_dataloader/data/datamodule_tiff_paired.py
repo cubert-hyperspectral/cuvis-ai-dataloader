@@ -20,7 +20,7 @@ from torch.utils.data import Dataset
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef
 
-from ._extras import parse_float_list, parse_str_list
+from ._extras import accepts_data_config, parse_float_list, parse_str_list
 from .labelers.paired_png_labeler import PairedPngLabeler
 from .readers.tiff_reader import TiffCubeReader
 
@@ -59,6 +59,7 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
 
     DATA_MODULE_NAME: ClassVar[str] = "tiff_paired"
 
+    @accepts_data_config
     def __init__(
         self,
         *,
@@ -72,19 +73,7 @@ class TiffPairedDataModule(BaseCuvisAIDataModule):
         label_output_key: str = "label_rgb",
         label_mode: str = "rgb",
         samples_per_frame: int = 1,
-        params: dict | None = None,
-        # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
-        # identity fixes the module). Any other unknown kwarg raises.
-        data_module: str | None = None,
     ) -> None:
-        if params:
-            images_dir = images_dir or params.get("images_dir")
-            labels_dir = labels_dir or params.get("labels_dir")
-            glob = params.get("glob", glob)
-            wavelengths = wavelengths if wavelengths is not None else params.get("wavelengths")
-            label_output_key = params.get("label_output_key", label_output_key)
-            label_mode = params.get("label_mode", label_mode)
-            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
         super().__init__(
             splits=splits,
             batch_size=batch_size,

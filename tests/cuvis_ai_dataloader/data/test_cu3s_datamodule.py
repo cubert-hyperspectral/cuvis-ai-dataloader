@@ -6,9 +6,14 @@ import numpy as np
 import pytest
 import torch
 
-from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
+from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule, create_data_module
 from cuvis_ai_dataloader.data.datamodule_cu3s import Cu3sDataModule
-from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
+from cuvis_ai_schemas.training.data import (
+    DataConfig,
+    DataSplitConfig,
+    Selector,
+    SelectorKind,
+)
 
 
 def _make_cu3s(tmp_path, name="x.cu3s"):
@@ -151,6 +156,34 @@ def test_unknown_kwarg_raises(tmp_path):
 def test_data_module_passthrough_key_accepted(mock_cuvis_sdk, tmp_path):
     # The nested cfg.data shape carries `data_module`; it is accepted and ignored.
     dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), data_module="cu3s")
+    dm.setup(stage="predict")
+    assert len(dm._predict_ds) == 7
+
+
+def test_nested_unknown_key_raises(tmp_path):
+    # A stray/typo'd key inside the nested `params` now fails loudly, matching the flat
+    # path (test_unknown_kwarg_raises) instead of being silently dropped.
+    with pytest.raises(TypeError, match="bogus"):
+        Cu3sDataModule(params={"cu3s_file_path": _make_cu3s(tmp_path), "bogus": 1})
+
+
+def test_flat_kwarg_wins_over_params(tmp_path):
+    # Standardized precedence: an explicit flat kwarg wins over the same key in `params`.
+    dm = Cu3sDataModule(
+        processing_mode="Raw",
+        params={"processing_mode": "Reflectance", "cu3s_file_path": _make_cu3s(tmp_path)},
+    )
+    assert dm.processing_mode == "Raw"
+
+
+def test_create_data_module_builds_cu3s(mock_cuvis_sdk, tmp_path):
+    # The registry/production path spreads `params` into flat kwargs; the decorator is inert
+    # there, and construction + setup succeed end to end.
+    class _Reg:
+        data_modules = {"cu3s": Cu3sDataModule}
+
+    cfg = DataConfig(data_module="cu3s", params={"cu3s_file_path": _make_cu3s(tmp_path)})
+    dm = create_data_module(_Reg(), cfg)
     dm.setup(stage="predict")
     assert len(dm._predict_ds) == 7
 
