@@ -143,6 +143,16 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         """Validate that ``universe_csv`` is given, ends in ``.csv``, and exists."""
         validate_universe_csv_param(params, "npz_multi")
 
+    def supported_attrs(self) -> frozenset[str]:
+        """NPZ frames carry no COCO category map, so no metadata attrs can be supplied.
+
+        Returning an empty set lets constraint evaluation treat an anomaly-based constraint
+        as ``unavailable`` (soft-skip / warn) rather than forcing ``enumerate`` to raise.
+        A ``tags`` / ``categories`` *selector* still hard-raises in ``enumerate`` (that is a
+        genuine authoring error), but an opportunistic constraint attr is skipped cleanly.
+        """
+        return frozenset()
+
     # -- selector path ---------------------------------------------------------
     def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
         """List the universe rows as the attributed sample universe (one ref per row).
