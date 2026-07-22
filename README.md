@@ -166,6 +166,54 @@ data:
     universe_csv: universe.csv
 ```
 
+### GUI-authored splits over a cu3s folder (contract)
+
+External split authors (e.g. the CuvisNEXT split designer) write a frozen `splits.json`
+(a serialized `DataSplitConfig` with `file_indices` selectors) against a **folder of cu3s
+files with per-measurement granularity**. That contract is `cu3s` folder mode with
+`frames: measurements`:
+
+```yaml
+data:
+  data_module: cu3s
+  batch_size: 1
+  num_workers: 0
+  splits:
+    splits_path: <absolute path to the frozen splits.json>
+  params:
+    data_dir: <folder holding the .cu3s files>
+    frames: measurements
+    recursive: true          # walk per-day subfolders
+    processing_mode: Reflectance
+```
+
+The frozen rules both sides implement:
+
+- **Universe** = every `*.cu3s` under `data_dir` (recursive when `recursive: true`),
+  one sample per measurement `0..N-1`, ordered by `(source, index)`.
+- **Source identity is canonical**: the absolute path with forward slashes and
+  filesystem-true case — Python `Path(p).resolve().as_posix()`, C++/Qt
+  `QFileInfo::canonicalFilePath()`. Selectors in the authored `splits.json` must carry
+  exactly this form; matching is string equality, so a moved or renamed member file
+  fails loud with "matched 0 samples" rather than silently shrinking a split.
+- **`uid` = `<source>#<index>`** (the sibling COCO image id equals the read position, so
+  it never extends the uid). `universe_hash` = sha256 over the ordered uids, each
+  followed by `\n` (`cuvis_ai_core.data.splits_io.universe_hash`). For `file_indices`
+  splits the server treats the hash as informational (only positional `dir_indices`
+  splits are hash-verified); staleness detection is the author's concern.
+- **Annotations** are the sibling `<stem>.json` COCO next to each cu3s (attached
+  automatically); an empty `predict` stage means the whole universe.
+- **Training stages require splits.** `cu3s` does not own split semantics: `fit` /
+  `validate` / `test` with no `DataConfig.splits` raise instead of silently iterating
+  the whole universe (which would contaminate statistical initialization with anomalous
+  frames). Split-less `predict` over the whole universe stays valid.
+
+The golden fixture `tests/cuvis_ai_dataloader/fixtures/gui_authored_splits.json` is the
+byte-level reference of the authored shape (the `{DATA_DIR}` token stands in for the
+machine-specific folder); the same file is committed in the CuvisNEXT test suite and its
+`universe_hash` doubles as the shared sha256 test vector. Changing it is a cross-repo
+contract change.
+
 ## Architecture
 
 Concrete DataModules subclass `cuvis_ai_core.data.datamodule.BaseCuvisAIDataModule`
