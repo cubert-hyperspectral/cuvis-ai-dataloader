@@ -120,10 +120,8 @@ def test_resolve_rejects_ambiguous_read_index():
 def test_resolve_splits_cli_from_csv(tmp_path, monkeypatch):
     (tmp_path / "a.cu3s").write_bytes(b"")
     (tmp_path / "b.cu3s").write_bytes(b"")
-    csv_path = tmp_path / "splits.csv"
-    csv_path.write_text(
-        "split,cu3s_path,annotation_json,image_id\ntrain,a.cu3s,,0\ntest,b.cu3s,,0\n"
-    )
+    csv_path = tmp_path / "universe.csv"
+    csv_path.write_text("split,source,index\ntrain,a.cu3s,0\ntest,b.cu3s,0\n")
     out = tmp_path / "splits.json"
     monkeypatch.setattr(
         sys, "argv", ["resolve-splits", "--from-csv", str(csv_path), "--out", str(out)]

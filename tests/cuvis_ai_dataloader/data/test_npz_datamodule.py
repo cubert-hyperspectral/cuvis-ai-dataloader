@@ -47,15 +47,32 @@ def test_unknown_kwarg_raises(tmp_path):
 
 def test_missing_required_column_raises(tmp_path):
     csv_path = tmp_path / "bad.csv"
-    csv_path.write_text("source,index\ns.cu3s,0\n")  # no path column
+    csv_path.write_text("source,materialized_path\ns.cu3s,f0.npz\n")  # no index column
     with pytest.raises(ValueError, match="missing required column"):
+        MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(csv_path))
+
+
+def test_npz_requires_materialized_path(tmp_path):
+    # npz has no physical frame at `source`; a row without materialized_path is refused.
+    csv_path = tmp_path / "u.csv"
+    csv_path.write_text("source,index\ns.cu3s,0\n")
+    with pytest.raises(ValueError, match="materialized_path"):
+        MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(csv_path))
+
+
+def test_npz_rejects_split_column(tmp_path):
+    # npz is selector-driven; an inline split column is rejected (only cu3s_multi honors it).
+    _write_npz(tmp_path / "f0.npz", with_mask=True)
+    csv_path = tmp_path / "u.csv"
+    csv_path.write_text("source,index,materialized_path,split\ns.cu3s,0,f0.npz,train\n")
+    with pytest.raises(ValueError, match="split"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(csv_path))
 
 
 def test_dataset_reads_cube_mask_and_wavelengths(tmp_path):
     npz = tmp_path / "frame.npz"
     _write_npz(npz, with_mask=True)
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 7, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 7, "frame_id": 0}])
     item = ds[0]
     assert item["cube"].shape == (8, 10, 5)
     assert item["mask"].shape == (8, 10)
@@ -68,7 +85,7 @@ def test_dataset_reads_cube_mask_and_wavelengths(tmp_path):
 def test_dataset_builds_empty_mask_when_absent(tmp_path):
     npz = tmp_path / "frame_nomask.npz"
     _write_npz(npz, with_mask=False)
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 11, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 11, "frame_id": 0}])
     item = ds[0]
     assert item["mask"].shape == (8, 10)
     assert item["mask"].dtype == np.int32
@@ -78,7 +95,7 @@ def test_dataset_builds_empty_mask_when_absent(tmp_path):
 def test_dataset_reads_class_mask_when_present(tmp_path):
     npz = tmp_path / "frame_cm.npz"
     _write_npz(npz, with_mask=True, with_class_mask=True)
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 5, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 5, "frame_id": 0}])
     item = ds[0]
     assert item["class_mask"].shape == (8, 10)
     assert item["class_mask"].dtype == np.uint8
@@ -90,7 +107,7 @@ def test_dataset_reads_class_mask_when_present(tmp_path):
 def test_dataset_emits_zero_class_mask_when_absent(tmp_path):
     npz = tmp_path / "frame_nocm.npz"
     _write_npz(npz, with_mask=True)  # no class_mask key
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 6, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 6, "frame_id": 0}])
     item = ds[0]
     assert item["class_mask"].shape == (8, 10)
     assert item["class_mask"].dtype == np.uint8
@@ -104,7 +121,7 @@ def _write_universe(tmp_path: Path) -> Path:
         _write_npz(tmp_path / f"f{i}.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
     rows = "".join(f"s.cu3s,{i},f{i}.npz\n" for i in range(6))
-    universe.write_text("source,index,path\n" + rows)
+    universe.write_text("source,index,materialized_path\n" + rows)
     return universe
 
 
@@ -164,7 +181,7 @@ def test_selector_setup_fit_and_test_resolve_subsets(tmp_path):
     assert len(dm.val_ds) == 1
     assert len(dm.test_ds) == 2
     # build_dataset_from_refs mapped identity -> the right npz
-    assert dm.test_ds.rows[0]["path"].endswith("f4.npz")
+    assert dm.test_ds.rows[0]["materialized_path"].endswith("f4.npz")
 
 
 def test_selector_predict_empty_iterates_universe(tmp_path):
@@ -191,7 +208,7 @@ def test_universe_duplicate_identity_raises(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     _write_npz(tmp_path / "f1.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\ns.cu3s,0,f1.npz\n")
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\ns.cu3s,0,f1.npz\n")
     with pytest.raises(ValueError, match="duplicate identity"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
 
@@ -200,14 +217,14 @@ def test_universe_duplicate_path_raises(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
     # Distinct identities, same npz path -> rejected (each row must be a distinct file).
-    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\ns.cu3s,1,f0.npz\n")
-    with pytest.raises(ValueError, match="duplicate path"):
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\ns.cu3s,1,f0.npz\n")
+    with pytest.raises(ValueError, match="duplicate materialized_path"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
 
 
 def test_universe_rejects_parent_escape_path(tmp_path):
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\ns.cu3s,0,../f0.npz\n")
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,../f0.npz\n")
     with pytest.raises(ValueError, match="must not contain"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
 
@@ -216,7 +233,7 @@ def test_universe_group_column_carried(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
     # The optional `group` column is parsed and carried onto SampleRef.group.
-    universe.write_text("source,index,path,group\ns.cu3s,0,f0.npz,batch_a\n")
+    universe.write_text("source,index,materialized_path,group\ns.cu3s,0,f0.npz,batch_a\n")
     dm = MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
     assert dm.enumerate()[0].group == "batch_a"
 
@@ -224,7 +241,7 @@ def test_universe_group_column_carried(tmp_path):
 def test_universe_source_normalized_to_posix(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\nday2\\s.cu3s,0,f0.npz\n")
+    universe.write_text("source,index,materialized_path\nday2\\s.cu3s,0,f0.npz\n")
     # A selector authored with a posix source must still resolve the backslash-authored row.
     dm = MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
     from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind

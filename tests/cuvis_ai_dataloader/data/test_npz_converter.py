@@ -61,9 +61,10 @@ def test_write_universe_csv_has_no_split_column(tmp_path):
     write_universe_csv(recs, out)
     with out.open() as f:
         rows = list(csv.DictReader(f))
-    assert list(rows[0].keys()) == ["source", "index", "path"]
+    assert list(rows[0].keys()) == ["source", "index", "materialized_path"]
     assert "split" not in rows[0]
     assert rows[1]["index"] == "1"
+    assert rows[0]["materialized_path"] == "a/x_000000.npz"
 
 
 # --------------------------------------------------------------------------- fakes
@@ -301,11 +302,11 @@ def test_convert_split_manifest_end_to_end(patched, tmp_path):
 
     with result.universe_csv.open() as f:
         idx = list(csv.DictReader(f))
-    assert list(idx[0].keys()) == ["source", "index", "path"]
+    assert list(idx[0].keys()) == ["source", "index", "materialized_path"]
     assert {r["source"] for r in idx} == {"day2/A.cu3s", "day3/B.cu3s"}  # posix identity
-    # path is stored relative to the universe.csv dir (cwd-independent).
-    assert all(not Path(r["path"]).is_absolute() for r in idx)
-    assert all((result.universe_csv.parent / r["path"]).is_file() for r in idx)
+    # materialized_path is stored relative to the universe.csv dir (cwd-independent).
+    assert all(not Path(r["materialized_path"]).is_absolute() for r in idx)
+    assert all((result.universe_csv.parent / r["materialized_path"]).is_file() for r in idx)
 
     # splits.json loads as a DataSplitConfig and resolves against the npz_multi universe.
     from cuvis_ai_core.data.splits_io import load_splits
@@ -322,9 +323,9 @@ def test_convert_split_manifest_end_to_end(patched, tmp_path):
     dm.setup(stage="test")
     assert len(dm.train_ds) == 1 and len(dm.val_ds) == 1 and len(dm.test_ds) == 1
     # Annotated session bakes masks; unannotated session stays mask-free.
-    with np.load(dm.train_ds.rows[0]["path"]) as z:
+    with np.load(dm.train_ds.rows[0]["materialized_path"]) as z:
         assert "mask" in z.files and int(z["class_mask"].max()) == 3
-    with np.load(dm.test_ds.rows[0]["path"]) as z:
+    with np.load(dm.test_ds.rows[0]["materialized_path"]) as z:
         assert "mask" not in z.files
 
 

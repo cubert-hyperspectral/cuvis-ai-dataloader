@@ -14,7 +14,7 @@ multi-class ``class_mask`` (via the COCO labeler), optionally crops, and writes 
 These load directly via :class:`~cuvis_ai_dataloader.data.datamodule_npz_multi.MultiNpzDataModule`.
 
 **No train/val/test split is assigned here** — splitting is a separate concern. The converter
-only emits a small universe (``source, index, path``) so a frame can be traced back to its
+only emits a small universe (``source, index, materialized_path``) so a frame can be traced back to its
 source session; a split CSV is produced elsewhere and joined on that. A frame's COCO
 ``image_id`` is its cu3s measurement index (use one COCO per cu3s, e.g. the per-session json).
 """
@@ -35,7 +35,7 @@ class SplitManifestOutputs(NamedTuple):
     """The two artifacts :func:`convert_split_manifest` writes.
 
     ``splits_json`` is the selector-based assignment (core ``DataSplitConfig``); ``universe_csv``
-    is the universe lookup (``source, index, path``) the npz_multi selector path reads.
+    is the universe lookup (``source, index, materialized_path``) the npz_multi selector path reads.
     """
 
     splits_json: Path
@@ -269,12 +269,23 @@ def convert_cu3s(
 
 
 def write_universe_csv(records: list[dict[str, Any]], path: str | Path) -> None:
-    """Write the universe (``source, index, path``). No split column."""
-    fields = ["source", "index", "path"]
+    """Write the universe (``source, index, materialized_path``). No split column.
+
+    Records carry the physical path under ``path`` (internal record shape); it is written as the
+    ``materialized_path`` column of the shared ``universe.csv`` vocabulary.
+    """
+    fields = ["source", "index", "materialized_path"]
     with Path(path).open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        writer.writerows({k: r.get(k, "") for k in fields} for r in records)
+        for r in records:
+            writer.writerow(
+                {
+                    "source": r.get("source", ""),
+                    "index": r.get("index", ""),
+                    "materialized_path": r.get("materialized_path", r.get("path", "")),
+                }
+            )
 
 
 def convert_split_manifest(
@@ -304,7 +315,7 @@ def convert_split_manifest(
     Two artifacts are written (returned as a :class:`SplitManifestOutputs`):
 
     * ``universe.csv`` (``<out_dir>/universe.csv`` by default): the universe lookup
-      ``source, index, path`` with ``source`` the manifest-relative posix cu3s path.
+      ``source, index, materialized_path`` with ``source`` the manifest-relative posix cu3s path.
     * ``splits.json`` (``<out_dir>/splits.json`` by default): a core ``DataSplitConfig`` with,
       per split per source, one ``file_indices`` selector over the read indices. ``predict``
       copies the ``predict_from`` split's selectors (empty ``predict`` would otherwise resolve
