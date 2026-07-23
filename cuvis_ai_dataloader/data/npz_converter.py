@@ -424,6 +424,7 @@ def convert_universe(
     processing_mode: str | None = "Reflectance",
     compress: bool = True,
     resume: bool = True,
+    limit: int = 0,
 ) -> SplitManifestOutputs:
     """Convert the cu3s frames a ``splits.json`` selects, reading a shared ``universe.csv``.
 
@@ -437,7 +438,8 @@ def convert_universe(
     root); the input ``splits.json`` is copied out beside the npz universe for convenience.
 
     ``resume=True`` (default) skips already-converted, still-valid npz, so regenerating over an
-    existing set is fast.
+    existing set is fast. ``limit`` (when > 0) keeps at most that many frames per stage for a smoke
+    run; the emitted ``splits.json`` is capped to match so it still resolves cleanly.
     """
     from cuvis_ai_core.data.splits_io import load_splits, save_splits
 
@@ -451,6 +453,31 @@ def convert_universe(
     universe_dir = universe_out.resolve().parent  # npz path is stored relative to this
 
     split_cfg = load_splits(splits_json)
+    if limit and limit > 0:
+        from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
+
+        def _cap(selectors: list) -> list:
+            kept: dict[str, list[int]] = {}
+            taken = 0
+            for sel in selectors:
+                for i in sorted(int(x) for x in sel.ids):
+                    if taken >= limit:
+                        break
+                    kept.setdefault(_posix(sel.source), []).append(i)
+                    taken += 1
+                if taken >= limit:
+                    break
+            return [
+                Selector(kind=SelectorKind.FILE_INDICES, source=s, ids=sorted(ids))
+                for s, ids in sorted(kept.items())
+            ]
+
+        split_cfg = DataSplitConfig(
+            train=_cap(split_cfg.train),
+            val=_cap(split_cfg.val),
+            test=_cap(split_cfg.test),
+            predict=_cap(split_cfg.predict),
+        )
     referenced: set[tuple[str, int]] = set()
     for stage in (split_cfg.train, split_cfg.val, split_cfg.test, split_cfg.predict):
         for sel in stage:

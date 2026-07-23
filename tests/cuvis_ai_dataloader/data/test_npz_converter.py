@@ -523,3 +523,20 @@ def test_convert_universe_rejects_selector_absent_from_universe(patched, tmp_pat
     splits_in = _save_selectors(root / "splits" / "sel.json", {"train": [("day2/A.cu3s", [0, 1])]})
     with pytest.raises(ValueError, match="absent from the universe"):
         convert_universe(universe_in, root, tmp_path / "npz", splits_json=splits_in)
+
+
+def test_convert_universe_limit_caps_per_stage(patched, tmp_path):
+    root = tmp_path / "raw"
+    (root / "day2").mkdir(parents=True)
+    (root / "day2" / "A.cu3s").touch()
+    universe_in = _write_universe(
+        root / "universe.csv",
+        [
+            {"source": "day2/A.cu3s", "index": "0", "annotation": ""},
+            {"source": "day2/A.cu3s", "index": "1", "annotation": ""},
+        ],
+    )
+    splits_in = _save_selectors(root / "splits" / "sel.json", {"train": [("day2/A.cu3s", [0, 1])]})
+    result = convert_universe(universe_in, root, tmp_path / "npz", splits_json=splits_in, limit=1)
+    with result.universe_csv.open() as f:
+        assert len(list(csv.DictReader(f))) == 1  # capped to one frame per stage
