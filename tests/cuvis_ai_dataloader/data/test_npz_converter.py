@@ -19,6 +19,7 @@ from cuvis_ai_dataloader.data.npz_converter import (
     convert_cu3s,
     convert_cu3s_file,
     convert_split_manifest,
+    convert_universe,
     derive_masks,
     write_universe_csv,
 )
@@ -415,3 +416,110 @@ def test_convert_split_manifest_rejects_bad_manifest_and_missing_files(patched, 
     )
     with pytest.raises(FileNotFoundError, match="missing cu3s"):
         convert_split_manifest(manifest, tmp_path, tmp_path / "npz")
+
+
+# --------------------------------------------------------------------------- universe + splits
+def _write_universe(path: Path, rows: list[dict[str, str]]) -> Path:
+    fields = ["source", "index", "annotation"]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def _save_selectors(path: Path, per_stage: dict[str, list[tuple[str, list[int]]]]) -> Path:
+    from cuvis_ai_core.data.splits_io import save_splits
+    from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
+
+    def sels(stage):
+        return [
+            Selector(kind=SelectorKind.FILE_INDICES, source=src, ids=ids)
+            for src, ids in per_stage.get(stage, [])
+        ]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_splits(
+        DataSplitConfig(
+            train=sels("train"), val=sels("val"), test=sels("test"), predict=sels("predict")
+        ),
+        path,
+    )
+    return path
+
+
+def test_convert_universe_end_to_end(patched, tmp_path):
+    root = tmp_path / "raw"
+    (root / "day2").mkdir(parents=True)
+    (root / "day3").mkdir(parents=True)
+    (root / "day2" / "A.cu3s").touch()
+    (root / "day2" / "A.json").touch()
+    (root / "day3" / "B.cu3s").touch()
+
+    # The shape a dataset publishes: a unified universe.csv + a splits.json selector.
+    universe_in = _write_universe(
+        root / "universe.csv",
+        [
+            {"source": "day2/A.cu3s", "index": "0", "annotation": "day2/A.json"},
+            {"source": "day2/A.cu3s", "index": "1", "annotation": "day2/A.json"},
+            {"source": "day3/B.cu3s", "index": "0", "annotation": ""},
+            # present in the universe but NOT selected -> must not be materialized
+            {"source": "day3/B.cu3s", "index": "1", "annotation": ""},
+        ],
+    )
+    splits_in = _save_selectors(
+        root / "splits" / "sel.json",
+        {
+            "train": [("day2/A.cu3s", [0])],
+            "val": [("day2/A.cu3s", [1])],
+            "test": [("day3/B.cu3s", [0])],
+            "predict": [("day3/B.cu3s", [0])],
+        },
+    )
+
+    out = tmp_path / "npz"
+    result = convert_universe(universe_in, root, out, splits_json=splits_in)
+
+    assert result.universe_csv == out / "universe.csv"
+    assert result.splits_json == out / "splits.json"
+
+    with result.universe_csv.open() as f:
+        idx = list(csv.DictReader(f))
+    # Only the 3 SELECTED frames are converted; the unselected day3/B#1 is skipped.
+    assert list(idx[0].keys()) == ["source", "index", "materialized_path"]
+    assert len(idx) == 3
+    assert {(r["source"], r["index"]) for r in idx} == {
+        ("day2/A.cu3s", "0"),
+        ("day2/A.cu3s", "1"),
+        ("day3/B.cu3s", "0"),
+    }
+    assert all(not Path(r["materialized_path"]).is_absolute() for r in idx)
+    assert all((result.universe_csv.parent / r["materialized_path"]).is_file() for r in idx)
+
+    # The SAME splits.json resolves against the converted npz universe (unchanged identities).
+    from cuvis_ai_core.data.splits_io import load_splits
+
+    cfg = load_splits(result.splits_json)
+    dm = MultiNpzDataModule(splits=cfg, universe_csv=str(result.universe_csv))
+    dm.setup(stage="fit")
+    dm.setup(stage="test")
+    assert len(dm.train_ds) == 1 and len(dm.val_ds) == 1 and len(dm.test_ds) == 1
+    # Annotated session bakes masks; the unannotated one stays mask-free.
+    with np.load(dm.train_ds.rows[0]["materialized_path"]) as z:
+        assert "mask" in z.files and int(z["class_mask"].max()) == 3
+    with np.load(dm.test_ds.rows[0]["materialized_path"]) as z:
+        assert "mask" not in z.files
+
+
+def test_convert_universe_rejects_selector_absent_from_universe(patched, tmp_path):
+    root = tmp_path / "raw"
+    (root / "day2").mkdir(parents=True)
+    (root / "day2" / "A.cu3s").touch()
+    universe_in = _write_universe(
+        root / "universe.csv",
+        [{"source": "day2/A.cu3s", "index": "0", "annotation": ""}],
+    )
+    # selector references index 1, which the universe does not list
+    splits_in = _save_selectors(root / "splits" / "sel.json", {"train": [("day2/A.cu3s", [0, 1])]})
+    with pytest.raises(ValueError, match="absent from the universe"):
+        convert_universe(universe_in, root, tmp_path / "npz", splits_json=splits_in)
