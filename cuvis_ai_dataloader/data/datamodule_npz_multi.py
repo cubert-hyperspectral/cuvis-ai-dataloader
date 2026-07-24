@@ -1,12 +1,14 @@
 """npz_multi DataModule: one-frame-per-file compressed NPZ, selector-driven splits.
 
 ``DATA_MODULE_NAME = "npz_multi"`` (no extras: numpy/torch are core deps). One ``.npz`` per
-frame, selected by a core ``splits.json`` over a ``universe_csv`` (a ``universe.csv``):
+frame, selected by a core ``splits.json`` over a ``universe_csv`` (the shared ``universe.csv``):
 
-* ``universe_csv`` (``source, index, path`` + optional ``annotation, format, group``): the sample
-  universe, one row per frame. ``source`` is the opaque logical identity (a cu3s-derived npz
-  carries its posix cu3s path); ``index`` is the read position (== COCO image_id); ``path`` is
-  the ``.npz`` for that frame, relative to the CSV.
+* ``universe_csv`` (``source, index, materialized_path`` + optional ``annotation, format,
+  group``): the sample universe, one row per frame. ``source`` is the opaque logical identity (a
+  cu3s-derived npz carries its posix cu3s path); ``index`` is the read position (== COCO
+  image_id); ``materialized_path`` is the ``.npz`` for that frame, relative to the CSV. npz has no
+  physical frame at ``source``, so ``materialized_path`` is required (unlike cu3s, which defaults
+  it to ``source``). A ``split`` column is rejected here: npz is selector-driven.
 * ``splits.json`` (a core ``DataSplitConfig`` passed as ``DataConfig.splits``): ``file_indices``
   selectors pick each split's subset by ``(source, index)``. Because ``source`` is the cu3s
   identity, one ``splits.json`` resolves against both the raw cu3s data (``cu3s_multi``) and the
@@ -27,7 +29,6 @@ where those measurably help throughput.
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -36,20 +37,10 @@ from torch.utils.data import DataLoader, Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 
+from ._universe import parse_universe, validate_universe_csv_param
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cuvis_ai_schemas.training.data import SampleRef
-
-#: Required universe columns: identity (``source``, ``index``) -> physical ``path``.
-_UNIVERSE_REQUIRED = ("source", "index", "path")
-#: Optional universe columns, parsed + carried. ``annotation`` / ``format`` are informational for
-#: npz (which bakes masks in and reads npz only); ``group`` is a reserved leakage-grouping key
-#: (carried onto ``SampleRef.group`` but not yet enforced by the leakage check).
-_UNIVERSE_OPTIONAL = ("annotation", "format", "group")
-
-
-def _posix(path: str) -> str:
-    """Normalize a source-identity string to posix so cross-platform selectors match."""
-    return str(path).replace("\\", "/")
 
 
 class _MultiNpzDataset(Dataset):
@@ -59,7 +50,7 @@ class _MultiNpzDataset(Dataset):
         self._rows = rows
         # Expose the wavelength axis (cu3s parity: consumers read ``dm.<split>_ds.wavelengths_nm``).
         if self._rows:
-            with np.load(self._rows[0]["path"]) as z:
+            with np.load(self._rows[0]["materialized_path"]) as z:
                 wl = np.asarray(z["wavelengths"]).ravel()
             self.wavelengths_nm = wl.astype(np.int32, copy=False)
             self.num_channels = int(self.wavelengths_nm.shape[0])
@@ -69,7 +60,7 @@ class _MultiNpzDataset(Dataset):
 
     @property
     def rows(self) -> list[dict]:
-        """Public read-only view of the per-frame rows (``path, index, frame_id``)."""
+        """Public read-only view of the per-frame rows (``materialized_path, index, frame_id``)."""
         return self._rows
 
     def __len__(self) -> int:
@@ -77,7 +68,7 @@ class _MultiNpzDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, np.ndarray | int]:
         rec = self._rows[idx]
-        with np.load(rec["path"]) as z:
+        with np.load(rec["materialized_path"]) as z:
             cube = np.asarray(z["cube"], dtype=np.float32)
             wavelengths = np.asarray(z["wavelengths"]).ravel().astype(np.int32, copy=False)
             mask = (
@@ -149,19 +140,18 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
                 "npz_multi requires a 'splits' selector config (a DataSplitConfig or splits.json)."
             )
         self._universe_csv = Path(universe_csv).resolve()
-        self._csv_dir = self._universe_csv.parent
-        self._universe = self._parse_universe(self._universe_csv)
+        self._universe = parse_universe(
+            self._universe_csv,
+            require_materialized_path=True,  # npz has no frame at `source`; the .npz is the file
+            accept_split=False,  # npz is selector-driven; a split column is rejected
+            unique_materialized_path=True,  # one .npz per row
+            allow_index_ranges=False,  # one row per frame; no ranges
+        )
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
         """Validate that ``universe_csv`` is given, ends in ``.csv``, and exists."""
-        universe_csv = params.get("universe_csv")
-        if not universe_csv:
-            raise ValueError("npz_multi requires 'universe_csv' in params (with a splits.json).")
-        if not str(universe_csv).endswith(".csv"):
-            raise ValueError(f"universe_csv must end with .csv: {universe_csv!r}")
-        if not Path(universe_csv).is_file():
-            raise ValueError(f"universe_csv does not exist: {universe_csv}")
+        validate_universe_csv_param(params, "npz_multi")
 
     # -- selector path ---------------------------------------------------------
     def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
@@ -195,7 +185,9 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
         """Build the dataset for a resolved subset, mapping ``(source, index)`` -> ``.npz``."""
         assert self._universe is not None
-        by_identity = {(rec["source"], int(rec["index"])): rec["path"] for rec in self._universe}
+        by_identity = {
+            (rec["source"], int(rec["index"])): rec["materialized_path"] for rec in self._universe
+        }
         rows = []
         for i, ref in enumerate(refs):
             key = (ref.source, int(ref.index if ref.index is not None else 0))
@@ -205,7 +197,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
             rows.append(
                 {
                     "frame_id": i,
-                    "path": path,
+                    "materialized_path": path,
                     "index": int(ref.label_id if ref.label_id is not None else key[1]),
                 }
             )
@@ -233,61 +225,3 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
             if self._worker_multiprocessing_context:
                 kwargs["multiprocessing_context"] = self._worker_multiprocessing_context
         return DataLoader(dataset, **kwargs)
-
-    def _parse_universe(self, csv_path: Path) -> list[dict[str, Any]]:
-        """Parse the selector-path universe (``source, index, path`` + optional columns).
-
-        ``source`` is normalized to posix so a selector authored on one platform resolves on
-        another. Three failures are rejected loudly rather than silently mis-resolving downstream:
-        a duplicate ``(source, index)`` identity, two rows pointing at the same ``path``, and a
-        ``path`` that escapes the CSV directory via ``..``.
-        """
-        out: list[dict[str, Any]] = []
-        seen_identity: set[tuple[str, int]] = set()
-        seen_path: set[str] = set()
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            missing = [c for c in _UNIVERSE_REQUIRED if c not in (reader.fieldnames or [])]
-            if missing:
-                raise ValueError(
-                    f"{csv_path}: missing required column(s) {missing}. "
-                    f"Required: {list(_UNIVERSE_REQUIRED)} "
-                    f"(optional: {list(_UNIVERSE_OPTIONAL)}). Extra columns are allowed and ignored."
-                )
-            for row in reader:
-                source = _posix(row["source"])
-                index = int(str(row["index"]).strip())
-                identity = (source, index)
-                if identity in seen_identity:
-                    raise ValueError(
-                        f"{csv_path}: duplicate identity (source, index)={identity}; "
-                        "each (source, index) must map to exactly one npz."
-                    )
-                seen_identity.add(identity)
-                resolved = str(self._resolve(row["path"]))
-                if resolved in seen_path:
-                    raise ValueError(
-                        f"{csv_path}: duplicate path {resolved!r}; "
-                        "each row must point at a distinct npz."
-                    )
-                seen_path.add(resolved)
-                rec: dict[str, Any] = {"source": source, "index": index, "path": resolved}
-                group = (row.get("group") or "").strip()
-                if group:
-                    rec["group"] = _posix(group)
-                out.append(rec)
-        if not out:
-            raise ValueError(f"{csv_path}: no rows.")
-        return out
-
-    def _resolve(self, raw: str) -> Path:
-        """Resolve a relative ``path`` against the CSV's parent dir; reject ``..`` escapes.
-
-        ``path`` is stored relative to the CSV (portable). A ``..`` component is rejected: it
-        would let the universe reach outside its own directory tree, defeating portability and
-        opening a traversal footgun. Absolute paths pass through unchanged.
-        """
-        p = Path(raw)
-        if ".." in p.parts:
-            raise ValueError(f"universe path must not contain '..': {raw!r}")
-        return p if p.is_absolute() else (self._csv_dir / p).resolve()
