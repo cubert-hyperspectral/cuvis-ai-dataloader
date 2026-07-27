@@ -3,8 +3,9 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## [Unreleased]
+## 0.5.0 - 2026-07-27
 
+- **cu3s reader cache is now a bounded LRU with close-on-evict.** `_Cu3sRefDataset` keeps at most `max_open_sessions` (default 4) open SDK sessions in an LRU, closing the least-recently-used on eviction (and via `close()` / `__del__`); each open Reflectance session holds native SDK GPU pools, and too many open at once crash the SDK's CUDA allocator ("illegal memory access") when torch shares the GPU. Keeps the per-dataset session footprint flat across a shuffled multi-file epoch.
 - **`npz_multi` opts out of constraint sample-attrs (`supported_attrs() == frozenset()`).** The NPZ pool carries no per-frame tag/category metadata, so core's split-constraint evaluation reports `no_train_anomalous` as `unavailable` (soft-skipped or raised per severity) instead of crashing `enumerate` with `NotImplementedError`. Deriving `category_ids` from the baked `class_mask` is recorded as a follow-up in `TODOS.md`.
 - **DataModule constructors de-bloated: nested `DataConfig` handling centralized, three dead
   `cu3s` args removed.** A shared `accepts_data_config` decorator (`data/_extras.py`) now owns the
