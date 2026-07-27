@@ -51,7 +51,7 @@ def test_nested_cfg_data_construction(mock_cuvis_sdk, tmp_path):
         data_module="cu3s_multi",
         batch_size=1,
         num_workers=0,
-        params={"splits_csv": str(csv_path)},
+        params={"universe_csv": str(csv_path)},
     )
     assert len(dm._rows) == 3
 
