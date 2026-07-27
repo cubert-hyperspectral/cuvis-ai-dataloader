@@ -1,4 +1,4 @@
-"""Lazy heavy-dependency imports and string param parsers.
+"""Lazy heavy-dependency imports, string param parsers, and the DataConfig-shape decorator.
 
 Module-top imports across the plugin are limited to stdlib + numpy + torch +
 pytorch_lightning + the base class. Heavy deps (cuvis, tifffile, pycocotools,
@@ -6,9 +6,40 @@ scikit-image) are imported only inside the methods that use them, via the
 ``require_*`` helpers here, so a manifest with only some extras installed still
 imports cleanly. The first use of a module whose extra is missing raises a clear
 ``ImportError`` naming the install command.
+
+``accepts_data_config`` lets a DataModule ``__init__`` accept the nested ``DataConfig``
+shape (``DataModule(**cfg.data)``) without every subclass re-implementing the unpack.
 """
 
 from __future__ import annotations
+
+import functools
+from collections.abc import Callable
+
+
+def accepts_data_config(init: Callable) -> Callable:
+    """Let a DataModule ``__init__`` also accept the nested ``DataConfig`` shape.
+
+    The registry path (``create_data_module``) already spreads ``params`` into flat kwargs,
+    but direct config-driven callers splat a whole ``DataConfig`` dict
+    (``{data_module, splits, batch_size, num_workers, params}``) via ``DataModule(**cfg.data)``.
+    This normalizes that shape onto the flat signature: it drops the redundant ``data_module``
+    (the class identity fixes the module) and splices ``params`` entries in as flat kwargs. An
+    explicit flat kwarg wins over the same key in ``params``. Unknown keys (flat or nested)
+    still reach the wrapped ``__init__`` and raise ``TypeError`` -- no silent swallow.
+    """
+
+    @functools.wraps(init)
+    def wrapper(self, **kwargs):
+        """Normalize the nested ``DataConfig`` shape, then call the real ``__init__``."""
+        kwargs.pop("data_module", None)
+        params = kwargs.pop("params", None)
+        if params:
+            for key, value in params.items():
+                kwargs.setdefault(key, value)
+        return init(self, **kwargs)
+
+    return wrapper
 
 
 def require_cuvis():

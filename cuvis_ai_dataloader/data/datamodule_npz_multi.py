@@ -37,6 +37,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 
+from ._extras import accepts_data_config
 from ._universe import parse_universe, validate_universe_csv_param
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -99,6 +100,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
 
     DATA_MODULE_NAME: ClassVar[str] = "npz_multi"
 
+    @accepts_data_config
     def __init__(
         self,
         *,
@@ -110,19 +112,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         persistent_workers: bool = False,
         worker_multiprocessing_context: str = "spawn",
         samples_per_frame: int = 1,
-        params: dict | None = None,
-        # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
-        # identity fixes the module). Any other unknown kwarg raises.
-        data_module: str | None = None,
     ) -> None:
-        if params:
-            universe_csv = universe_csv or params.get("universe_csv")
-            pin_memory = params.get("pin_memory", pin_memory)
-            persistent_workers = params.get("persistent_workers", persistent_workers)
-            worker_multiprocessing_context = params.get(
-                "worker_multiprocessing_context", worker_multiprocessing_context
-            )
-            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
         super().__init__(
             splits=splits,
             batch_size=batch_size,
@@ -152,6 +142,16 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
     def validate_params(params: dict[str, Any]) -> None:
         """Validate that ``universe_csv`` is given, ends in ``.csv``, and exists."""
         validate_universe_csv_param(params, "npz_multi")
+
+    def supported_attrs(self) -> frozenset[str]:
+        """NPZ frames carry no COCO category map, so no metadata attrs can be supplied.
+
+        Returning an empty set lets constraint evaluation treat an anomaly-based constraint
+        as ``unavailable`` (soft-skip / warn) rather than forcing ``enumerate`` to raise.
+        A ``tags`` / ``categories`` *selector* still hard-raises in ``enumerate`` (that is a
+        genuine authoring error), but an opportunistic constraint attr is skipped cleanly.
+        """
+        return frozenset()
 
     # -- selector path ---------------------------------------------------------
     def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:

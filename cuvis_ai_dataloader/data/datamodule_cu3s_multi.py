@@ -27,6 +27,7 @@ from torch.utils.data import Dataset
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_schemas.training.data import SampleRef
 
+from ._extras import accepts_data_config
 from ._universe import parse_universe, validate_universe_csv_param
 from .readers.cu3s_reader import Cu3sCubeReader
 
@@ -85,6 +86,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
 
     DATA_MODULE_NAME: ClassVar[str] = "cu3s_multi"
 
+    @accepts_data_config
     def __init__(
         self,
         *,
@@ -95,16 +97,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         processing_mode: str = "Reflectance",
         split: str | None = None,
         samples_per_frame: int = 1,
-        params: dict | None = None,
-        # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
-        # identity fixes the module). Any other unknown kwarg raises.
-        data_module: str | None = None,
     ) -> None:
-        if params:
-            universe_csv = universe_csv or params.get("universe_csv")
-            processing_mode = params.get("processing_mode", processing_mode)
-            split = split if split is not None else params.get("split")
-            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
         super().__init__(
             splits=splits,
             batch_size=batch_size,

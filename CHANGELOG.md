@@ -3,8 +3,36 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## [Unreleased]
+## 0.5.0 - 2026-07-27
 
+- **cu3s reader cache is now a bounded LRU with close-on-evict.** `_Cu3sRefDataset` keeps at most `max_open_sessions` (default 4) open SDK sessions in an LRU, closing the least-recently-used on eviction (and via `close()` / `__del__`); each open Reflectance session holds native SDK GPU pools, and too many open at once crash the SDK's CUDA allocator ("illegal memory access") when torch shares the GPU. Keeps the per-dataset session footprint flat across a shuffled multi-file epoch.
+- **`npz_multi` opts out of constraint sample-attrs (`supported_attrs() == frozenset()`).** The NPZ pool carries no per-frame tag/category metadata, so core's split-constraint evaluation reports `no_train_anomalous` as `unavailable` (soft-skipped or raised per severity) instead of crashing `enumerate` with `NotImplementedError`. Deriving `category_ids` from the baked `class_mask` is recorded as a follow-up in `TODOS.md`.
+- **DataModule constructors de-bloated: nested `DataConfig` handling centralized, three dead
+  `cu3s` args removed.** A shared `accepts_data_config` decorator (`data/_extras.py`) now owns the
+  `DataModule(**cfg.data)` nested-shape normalization (drops the redundant `data_module`, splices
+  `params` onto the flat signature), replacing the duplicated `params`/`data_module`/`if params:`
+  block in all four modules (`cu3s`, `cu3s_multi`, `npz_multi`, `tiff_paired`); behavior is
+  unchanged for every real call shape. `Cu3sDataModule` drops three unused constructor args:
+  `normalize_to_unit` (was accepted but inert), `dataset_name` (the `data_dir` + `dataset_name`
+  single-file composition), and `glob` (cu3s folder mode is always `*.cu3s`). An unrecognized key
+  inside `params` now raises `TypeError` instead of being silently dropped, matching the flat-path
+  loud-rejection. Breaking only for callers that passed one of the three removed args (they now
+  fail loudly at construction); no shipped config used them.
+- **`cu3s` folder mode gained per-measurement enumeration (`frames: measurements`) + `recursive`.**
+  Folder sources can now enumerate one sample per measurement per file (canonical absolute
+  `Path.resolve().as_posix()` sources, sibling `<stem>.json` COCO attached, uid = `source#index`),
+  which is the contract for externally authored `splits.json` (the CuvisNEXT split designer);
+  `recursive: true` walks per-day subfolders. Default `frames: file` keeps the legacy
+  one-ref-per-file-at-measurement-0 behavior. Documented in the README ("GUI-authored splits over
+  a cu3s folder"), pinned by the committed golden fixture
+  `tests/cuvis_ai_dataloader/fixtures/gui_authored_splits.json` (shared byte-for-byte with the
+  CuvisNEXT test suite; its `universe_hash` is the shared sha256 test vector).
+- **`cu3s` now refuses split-less training stages.** `setup("fit"/"validate"/"test")` with no
+  `DataConfig.splits` raises instead of silently iterating the whole universe, which let
+  statistical initialization (e.g. MinMax) ingest anomalous frames with no error; split-less
+  `setup("predict")` (and `setup()` building only the predict dataset) keeps serving the whole
+  universe. Breaking for pipelines that trained a cu3s source without splits — add a `splits`
+  block (e.g. a frozen `splits.json` via `splits_path`).
 - **Unified `cu3s_multi` + `npz_multi` onto one `universe.csv` vocabulary via a shared parser (`data/_universe.py`).** Both modules now read `source, index` (required) plus optional `materialized_path, split, annotation, format, group`. `cu3s_multi`'s `splits_csv` argument is renamed `universe_csv` and its old columns (`split, cu3s_path, annotation_json, image_id`) are gone; `npz_multi`'s `path` column is renamed `materialized_path`. `materialized_path` defaults to `source` for cu3s (a raw `.cu3s` is its own file) and is required for npz (the physical file is the derived `.npz`). An inline `split` column is honored only by `cu3s_multi` (present → module-owned, absent → a training stage needs a splits.json; a splits.json always wins), and rejected by `npz_multi`. `source` is posix-normalized in both modules, fixing a cross-module `(source, index)` selector-key mismatch on Windows so one splits.json resolves against both the raw cu3s data and the converted npz. `cu3s_multi` no longer decouples a scalar `image_id` from the read index (`index` is now both). Regenerate every `universe.csv` / split CSV to the new columns; the converter, `cu3s-to-npz`, and `resolve-splits --from-csv` emit/consume them.
 
 ## 0.4.0 - 2026-07-15
