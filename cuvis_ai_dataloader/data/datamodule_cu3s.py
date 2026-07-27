@@ -21,6 +21,7 @@ whole universe.
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -51,26 +52,57 @@ class _Cu3sRefDataset(Dataset):
     Readers and labelers are cached per source, so single-file mode reuses one SDK session
     and folder mode opens a session only for the files actually selected (lazily, in
     ``__getitem__``, never at setup).
+
+    The reader cache is a bounded LRU with close-on-evict: every open session holds
+    native SDK resources including GPU processing pools, and past a handful of
+    concurrently open Reflectance sessions the SDK's CUDA allocator fails hard
+    ("illegal memory access", killing the process) — especially when torch shares
+    the GPU during training. Bounding + closing keeps the total footprint flat no
+    matter how many sources a shuffled multi-file epoch touches.
     """
 
-    def __init__(self, refs: list[SampleRef], processing_mode: str) -> None:
+    def __init__(
+        self, refs: list[SampleRef], processing_mode: str, *, max_open_sessions: int = 4
+    ) -> None:
+        if max_open_sessions < 1:
+            raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
         self._refs = refs
         self._processing_mode = processing_mode
-        self._readers: dict[str, Cu3sCubeReader] = {}
+        self._max_open_sessions = int(max_open_sessions)
+        self._readers: OrderedDict[str, Cu3sCubeReader] = OrderedDict()
         self._labelers: dict[str, Any] = {}
 
     def __getstate__(self) -> dict:
         # Drop cached SDK readers/labelers before pickling to DataLoader workers; each
         # worker reopens its own session lazily in __getitem__ (native handles don't pickle).
         state = self.__dict__.copy()
-        state["_readers"] = {}
+        state["_readers"] = OrderedDict()
         state["_labelers"] = {}
         return state
 
     def _reader_for(self, source: str) -> Cu3sCubeReader:
-        if source not in self._readers:
-            self._readers[source] = Cu3sCubeReader(source, processing_mode=self._processing_mode)
-        return self._readers[source]
+        reader = self._readers.get(source)
+        if reader is not None:
+            self._readers.move_to_end(source)
+            return reader
+        while len(self._readers) >= self._max_open_sessions:
+            _, evicted = self._readers.popitem(last=False)
+            evicted.close()
+        reader = Cu3sCubeReader(source, processing_mode=self._processing_mode)
+        self._readers[source] = reader
+        return reader
+
+    def close(self) -> None:
+        """Release every cached SDK session (safe to call repeatedly)."""
+        while self._readers:
+            _, reader = self._readers.popitem(last=False)
+            reader.close()
+
+    def __del__(self) -> None:  # best-effort: replaced datasets free their sessions
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _labeler_for(self, annotation: str):
         if annotation not in self._labelers:
@@ -138,6 +170,10 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         frames: str = "file",
         recursive: Any = False,
         samples_per_frame: int = 1,
+        # Concurrently open SDK sessions per dataset (LRU, close-on-evict). Each open
+        # Reflectance session holds SDK GPU processing pools; keep this small when
+        # torch shares the GPU.
+        max_open_sessions: int = 4,
     ) -> None:
         super().__init__(
             splits=splits,
@@ -166,6 +202,9 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             if isinstance(measurement_indices, str)
             else measurement_indices
         )
+        self.max_open_sessions = int(max_open_sessions)
+        if self.max_open_sessions < 1:
+            raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
         self._enum_labelers: dict[str, Any] = {}
 
     @staticmethod
@@ -342,7 +381,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
 
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
         """Build the torch Dataset reading exactly the resolved ``SampleRef`` subset."""
-        return _Cu3sRefDataset(refs, self.processing_mode)
+        return _Cu3sRefDataset(refs, self.processing_mode, max_open_sessions=self.max_open_sessions)
 
     def category_name_to_id(self) -> dict[str, int] | None:
         """Map COCO category names to ids (from the annotation), or None when unlabeled."""
