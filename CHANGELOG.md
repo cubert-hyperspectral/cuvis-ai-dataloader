@@ -3,6 +3,10 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## [Unreleased]
+
+- **Unified `cu3s_multi` + `npz_multi` onto one `universe.csv` vocabulary via a shared parser (`data/_universe.py`).** Both modules now read `source, index` (required) plus optional `materialized_path, split, annotation, format, group`. `cu3s_multi`'s `splits_csv` argument is renamed `universe_csv` and its old columns (`split, cu3s_path, annotation_json, image_id`) are gone; `npz_multi`'s `path` column is renamed `materialized_path`. `materialized_path` defaults to `source` for cu3s (a raw `.cu3s` is its own file) and is required for npz (the physical file is the derived `.npz`). An inline `split` column is honored only by `cu3s_multi` (present → module-owned, absent → a training stage needs a splits.json; a splits.json always wins), and rejected by `npz_multi`. `source` is posix-normalized in both modules, fixing a cross-module `(source, index)` selector-key mismatch on Windows so one splits.json resolves against both the raw cu3s data and the converted npz. `cu3s_multi` no longer decouples a scalar `image_id` from the read index (`index` is now both). Regenerate every `universe.csv` / split CSV to the new columns; the converter, `cu3s-to-npz`, and `resolve-splits --from-csv` emit/consume them.
+
 ## 0.4.0 - 2026-07-15
 
 - Added `samples_per_frame: int = 1` to `MultiNpzDataModule`: index-level duplication of the train rows so each frame yields N independent samples per epoch (downstream per-sample transforms such as random crops draw fresh for every occurrence; the shuffled loader interleaves duplicates across the epoch). Val/test/predict are never expanded.

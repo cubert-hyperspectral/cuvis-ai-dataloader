@@ -154,19 +154,29 @@ def resolve_stratified(
 
 
 def import_csv_splits(module) -> DataSplitConfig:
-    """Build a DataSplitConfig from a cu3s_multi module's CSV ``split`` column.
+    """Build a DataSplitConfig from a cu3s_multi universe's ``split`` column.
 
-    Groups each stage's rows by source into FILE_INDICES selectors (sorted, deduped),
-    outcome-equivalent to the CSV (same rows per stage), in canonical order.
+    Groups each stage's rows by ``source`` into FILE_INDICES selectors (sorted, deduped),
+    outcome-equivalent to the CSV (same rows per stage), in canonical order. Raises when the
+    universe carries no ``split`` values (nothing to import).
     """
     _assert_index_addressable(
-        (rec["cu3s_path"], int(rec["read_index"]), int(rec["image_id"])) for rec in module.rows
+        (rec["source"], int(rec["index"]), int(rec["index"])) for rec in module.rows
     )
     stage_pairs: dict[str, list[tuple[str, int]]] = {"train": [], "val": [], "test": []}
+    n_split = 0
     for rec in module.rows:
         split = rec["split"]
+        if split:
+            n_split += 1
         if split in stage_pairs:
-            stage_pairs[split].append((rec["cu3s_path"], int(rec["read_index"])))
+            stage_pairs[split].append((rec["source"], int(rec["index"])))
+    if n_split == 0:
+        raise ValueError(
+            "import_csv_splits: the universe has no 'split' column values to import. Add a 'split' "
+            "column (train/val/test) to the universe.csv, or compute a split with "
+            "'resolve-splits --data-module ... --strategy ...' instead of '--from-csv'."
+        )
 
     def selectors(pairs: list[tuple[str, int]]) -> list[Selector]:
         by_source: OrderedDict[str, list[int]] = OrderedDict()

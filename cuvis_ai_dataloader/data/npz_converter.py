@@ -14,7 +14,7 @@ multi-class ``class_mask`` (via the COCO labeler), optionally crops, and writes 
 These load directly via :class:`~cuvis_ai_dataloader.data.datamodule_npz_multi.MultiNpzDataModule`.
 
 **No train/val/test split is assigned here** — splitting is a separate concern. The converter
-only emits a small universe (``source, index, path``) so a frame can be traced back to its
+only emits a small universe (``source, index, materialized_path``) so a frame can be traced back to its
 source session; a split CSV is produced elsewhere and joined on that. A frame's COCO
 ``image_id`` is its cu3s measurement index (use one COCO per cu3s, e.g. the per-session json).
 """
@@ -35,7 +35,7 @@ class SplitManifestOutputs(NamedTuple):
     """The two artifacts :func:`convert_split_manifest` writes.
 
     ``splits_json`` is the selector-based assignment (core ``DataSplitConfig``); ``universe_csv``
-    is the universe lookup (``source, index, path``) the npz_multi selector path reads.
+    is the universe lookup (``source, index, materialized_path``) the npz_multi selector path reads.
     """
 
     splits_json: Path
@@ -269,12 +269,23 @@ def convert_cu3s(
 
 
 def write_universe_csv(records: list[dict[str, Any]], path: str | Path) -> None:
-    """Write the universe (``source, index, path``). No split column."""
-    fields = ["source", "index", "path"]
+    """Write the universe (``source, index, materialized_path``). No split column.
+
+    Records carry the physical path under ``path`` (internal record shape); it is written as the
+    ``materialized_path`` column of the shared ``universe.csv`` vocabulary.
+    """
+    fields = ["source", "index", "materialized_path"]
     with Path(path).open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        writer.writerows({k: r.get(k, "") for k in fields} for r in records)
+        for r in records:
+            writer.writerow(
+                {
+                    "source": r.get("source", ""),
+                    "index": r.get("index", ""),
+                    "materialized_path": r.get("materialized_path", r.get("path", "")),
+                }
+            )
 
 
 def convert_split_manifest(
@@ -304,7 +315,7 @@ def convert_split_manifest(
     Two artifacts are written (returned as a :class:`SplitManifestOutputs`):
 
     * ``universe.csv`` (``<out_dir>/universe.csv`` by default): the universe lookup
-      ``source, index, path`` with ``source`` the manifest-relative posix cu3s path.
+      ``source, index, materialized_path`` with ``source`` the manifest-relative posix cu3s path.
     * ``splits.json`` (``<out_dir>/splits.json`` by default): a core ``DataSplitConfig`` with,
       per split per source, one ``file_indices`` selector over the read indices. ``predict``
       copies the ``predict_from`` split's selectors (empty ``predict`` would otherwise resolve
@@ -399,6 +410,141 @@ def convert_split_manifest(
         splits_path,
     )
     return SplitManifestOutputs(splits_json=splits_path, universe_csv=universe_path)
+
+
+def convert_universe(
+    universe_csv: str | Path,
+    source_root: str | Path,
+    out_dir: str | Path,
+    *,
+    splits_json: str | Path,
+    out_universe_csv: str | Path | None = None,
+    out_splits_json: str | Path | None = None,
+    crop: CropMargins | None = None,
+    processing_mode: str | None = "Reflectance",
+    compress: bool = True,
+    resume: bool = True,
+    limit: int = 0,
+) -> SplitManifestOutputs:
+    """Convert the cu3s frames a ``splits.json`` selects, reading a shared ``universe.csv``.
+
+    The unified counterpart to :func:`convert_split_manifest`. Instead of a rich split-manifest
+    CSV, it takes the shared ``universe.csv`` (``source, index`` plus an optional per-frame
+    ``annotation`` COCO json) and a ``splits.json`` (a core ``DataSplitConfig``), both as a
+    dataset publishes them. It materializes exactly the frames the splits reference into per-frame
+    ``.npz`` and emits an npz ``universe.csv`` (``source, index, materialized_path``) whose
+    ``(source, index)`` identities are unchanged, so the SAME ``splits.json`` resolves against the
+    converted npz. Paths in the input ``universe.csv`` are relative to ``source_root`` (the dataset
+    root); the input ``splits.json`` is copied out beside the npz universe for convenience.
+
+    ``resume=True`` (default) skips already-converted, still-valid npz, so regenerating over an
+    existing set is fast. ``limit`` (when > 0) keeps at most that many frames per stage for a smoke
+    run; the emitted ``splits.json`` is capped to match so it still resolves cleanly.
+    """
+    from cuvis_ai_core.data.splits_io import load_splits, save_splits
+
+    source_root = Path(source_root)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    universe_out = (
+        Path(out_universe_csv) if out_universe_csv is not None else out_dir / "universe.csv"
+    )
+    splits_out = Path(out_splits_json) if out_splits_json is not None else out_dir / "splits.json"
+    universe_dir = universe_out.resolve().parent  # npz path is stored relative to this
+
+    split_cfg = load_splits(splits_json)
+    if limit and limit > 0:
+        from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
+
+        def _cap(selectors: list) -> list:
+            kept: dict[str, list[int]] = {}
+            taken = 0
+            for sel in selectors:
+                for i in sorted(int(x) for x in sel.ids):
+                    if taken >= limit:
+                        break
+                    kept.setdefault(_posix(sel.source), []).append(i)
+                    taken += 1
+                if taken >= limit:
+                    break
+            return [
+                Selector(kind=SelectorKind.FILE_INDICES, source=s, ids=sorted(ids))
+                for s, ids in sorted(kept.items())
+            ]
+
+        split_cfg = DataSplitConfig(
+            train=_cap(split_cfg.train),
+            val=_cap(split_cfg.val),
+            test=_cap(split_cfg.test),
+            predict=_cap(split_cfg.predict),
+        )
+    referenced: set[tuple[str, int]] = set()
+    for stage in (split_cfg.train, split_cfg.val, split_cfg.test, split_cfg.predict):
+        for sel in stage:
+            for i in sel.ids:
+                referenced.add((_posix(sel.source), int(i)))
+    if not referenced:
+        raise ValueError(f"splits.json {splits_json} references no frames.")
+
+    with Path(universe_csv).open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        missing = {"source", "index"} - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"universe.csv {universe_csv} lacks column(s): {sorted(missing)}")
+        uni_rows = list(reader)
+
+    # Group the referenced frames by source; carry the per-source annotation from the universe.
+    groups: dict[str, dict[str, Any]] = {}
+    for r in uni_rows:
+        source_id = _posix((r.get("source") or "").strip())
+        index = int(str(r["index"]).strip())
+        if (source_id, index) not in referenced:
+            continue
+        ann_rel = (r.get("annotation") or "").strip()
+        grp = groups.setdefault(source_id, {"indices": [], "annotation": ann_rel})
+        grp["indices"].append(index)
+        if ann_rel and not grp["annotation"]:
+            grp["annotation"] = ann_rel
+    if not groups:
+        raise ValueError(
+            f"no universe.csv row matches the {len(referenced)} frame(s) referenced by {splits_json}"
+        )
+
+    universe_records: list[dict[str, Any]] = []
+    for source_id, grp in groups.items():
+        cu3s_path = source_root / source_id
+        if not cu3s_path.is_file():
+            raise FileNotFoundError(f"universe references missing cu3s: {cu3s_path}")
+        annotation = source_root / grp["annotation"] if grp["annotation"] else None
+        if annotation is not None and not annotation.is_file():
+            raise FileNotFoundError(f"universe references missing COCO json: {annotation}")
+        records = convert_cu3s_file(
+            cu3s_path,
+            out_dir,
+            annotation_json=annotation,
+            crop=crop,
+            processing_mode=processing_mode,
+            frame_indices=sorted(grp["indices"]),
+            compress=compress,
+            resume=resume,
+        )
+        for rec in records:
+            npz_rel = _posix(os.path.relpath(Path(rec["path"]).resolve(), universe_dir))
+            universe_records.append(
+                {"source": source_id, "index": int(rec["index"]), "path": npz_rel}
+            )
+
+    write_universe_csv(universe_records, universe_out)
+    save_splits(split_cfg, splits_out)
+    _validate_universe_and_splits(universe_records, split_cfg)
+    logger.info(
+        "convert_universe: {} frame(s), {} session(s) -> {} + {}",
+        len(universe_records),
+        len(groups),
+        universe_out,
+        splits_out,
+    )
+    return SplitManifestOutputs(splits_json=splits_out, universe_csv=universe_out)
 
 
 def _validate_universe_and_splits(universe_records: list[dict[str, Any]], split_cfg: Any) -> None:

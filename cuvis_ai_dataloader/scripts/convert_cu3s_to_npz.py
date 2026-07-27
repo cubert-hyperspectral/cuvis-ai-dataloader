@@ -3,7 +3,7 @@
 Reads each measurement (Preview -> Reflectance), bakes the frame's COCO annotations into
 ``mask`` + ``class_mask`` (when annotations are given), optionally crops, and writes one
 ``.npz`` per frame. **No train/val/test split is assigned** — splitting is a separate concern;
-this only writes the npz (+ an optional universe ``source,index,path``).
+this only writes the npz (+ an optional universe ``source,index,materialized_path``).
 
 Examples::
 
@@ -59,7 +59,9 @@ def cu3s_to_npz_cli() -> None:
         help="cuvis ProcessingMode (default Reflectance; 'none' uses the recorded cube).",
     )
     parser.add_argument(
-        "--universe-csv", default=None, help="Write a source,index,path universe CSV here."
+        "--universe-csv",
+        default=None,
+        help="Write a source,index,materialized_path universe CSV here.",
     )
     parser.add_argument(
         "--limit", type=int, default=0, help="Convert at most N frames per cu3s (0 = all)."

@@ -1,34 +1,34 @@
-"""cu3s_multi DataModule: multi-file cu3s with a CSV universe + per-day COCO.
+"""cu3s_multi DataModule: multi-file cu3s over a shared ``universe.csv`` + per-day COCO.
 
-``DATA_MODULE_NAME = "cu3s_multi"`` (manifest extras ``[cu3s, coco]``). One ``.cu3s`` per
-frame, per-day COCO JSONs, an externally-supplied ``splits.csv`` whose rows are
-``(split, cu3s_path, annotation_json, image_id)``.
+``DATA_MODULE_NAME = "cu3s_multi"`` (manifest extras ``[cu3s, coco]``). Reads the shared
+``universe.csv`` vocabulary (``source, index [, materialized_path, split, annotation, format,
+group]``) via :mod:`cuvis_ai_dataloader.data._universe`; each frame is a measurement ``index`` of
+a ``.cu3s`` recording (``materialized_path``, defaulting to ``source``), optionally labeled by a
+per-day COCO ``annotation``.
 
 Two ways to run:
 
 * **Module-owned** (``DataConfig.splits is None``): each Lightning stage maps to the CSV
   ``split`` column via ``build_stage_dataset``.
-* **Selector-driven** (``DataConfig.splits`` set): the CSV rows are the ``enumerate()``
-  universe and selectors (or a ``splits.json`` produced by ``resolve-splits --from-csv``)
-  pick subsets. Each row is a first-class ``SampleRef`` with a ``uid`` derived from its source
-  and read index.
+* **Selector-driven** (``DataConfig.splits`` set): the CSV rows are the ``enumerate()`` universe
+  and selectors (or a ``splits.json`` produced by ``resolve-splits --from-csv``) pick subsets.
+  Each row is a first-class ``SampleRef`` whose ``uid`` derives from its posix ``source`` and
+  read ``index`` — so one ``splits.json`` resolves against both the raw cu3s data and a converted
+  npz universe.
 """
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 from typing import Any, ClassVar
 
 from torch.utils.data import Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
-from cuvis_ai_core.utils.general import expand_range_selectors
 from cuvis_ai_schemas.training.data import SampleRef
 
+from ._universe import parse_universe, validate_universe_csv_param
 from .readers.cu3s_reader import Cu3sCubeReader
-
-_REQUIRED_COLUMNS = ("split", "cu3s_path", "annotation_json", "image_id")
 
 
 class _MultiCu3sDataset(Dataset):
@@ -48,10 +48,10 @@ class _MultiCu3sDataset(Dataset):
         state["_labelers"] = {}
         return state
 
-    def _reader_for(self, source: str) -> Cu3sCubeReader:
-        if source not in self._readers:
-            self._readers[source] = Cu3sCubeReader(source, processing_mode=self._processing_mode)
-        return self._readers[source]
+    def _reader_for(self, path: str) -> Cu3sCubeReader:
+        if path not in self._readers:
+            self._readers[path] = Cu3sCubeReader(path, processing_mode=self._processing_mode)
+        return self._readers[path]
 
     def _labeler_for(self, ann: str):
         if ann not in self._labelers:
@@ -65,23 +65,23 @@ class _MultiCu3sDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         rec = self._rows[idx]
-        item = self._reader_for(rec["cu3s_path"]).read(rec["read_index"])
+        item = self._reader_for(rec["materialized_path"]).read(rec["index"])
         item.update(
             {
-                "read_index": int(rec["read_index"]),
-                "mesu_index": int(rec["image_id"]),
+                "read_index": int(rec["index"]),
+                "mesu_index": int(rec["index"]),
                 "frame_id": int(rec["frame_id"]),
-                "annotation_json": rec["annotation_json"],
+                "annotation_json": rec["annotation"],
             }
         )
-        ann = rec["annotation_json"]
+        ann = rec["annotation"]
         if ann:
-            item.update(self._labeler_for(ann).load_for(int(rec["image_id"]), item))
+            item.update(self._labeler_for(ann).load_for(int(rec["index"]), item))
         return item
 
 
 class MultiCu3sDataModule(BaseCuvisAIDataModule):
-    """Multi-file cu3s DataModule driven by an external ``splits.csv``."""
+    """Multi-file cu3s DataModule driven by a shared ``universe.csv``."""
 
     DATA_MODULE_NAME: ClassVar[str] = "cu3s_multi"
 
@@ -91,7 +91,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         splits=None,
         batch_size: int = 1,
         num_workers: int = 0,
-        splits_csv: str | None = None,
+        universe_csv: str | None = None,
         processing_mode: str = "Reflectance",
         split: str | None = None,
         samples_per_frame: int = 1,
@@ -101,7 +101,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         data_module: str | None = None,
     ) -> None:
         if params:
-            splits_csv = splits_csv or params.get("splits_csv")
+            universe_csv = universe_csv or params.get("universe_csv")
             processing_mode = params.get("processing_mode", processing_mode)
             split = split if split is not None else params.get("split")
             samples_per_frame = params.get("samples_per_frame", samples_per_frame)
@@ -111,29 +111,31 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             num_workers=num_workers,
             samples_per_frame=samples_per_frame,
         )
-        if not splits_csv:
-            raise ValueError("cu3s_multi requires 'splits_csv'.")
-        self._splits_csv = Path(splits_csv).resolve()
-        self._csv_dir = self._splits_csv.parent
+        if not universe_csv:
+            raise ValueError("cu3s_multi requires 'universe_csv'.")
+        self._universe_csv = Path(universe_csv).resolve()
         self._processing_mode = processing_mode
         self._predict_split = split  # which CSV split predict_dataloader iterates (module-owned)
-        self._rows = self._parse_csv(self._splits_csv)
+        self._rows = parse_universe(
+            self._universe_csv,
+            require_materialized_path=False,  # a raw .cu3s IS its own file; default to source
+            accept_split=True,
+            unique_materialized_path=False,  # one recording holds many frames
+            allow_index_ranges=True,  # `index=0-49` fans out into one row per measurement
+        )
+        # A `split` column makes the module own its splits; without it a training stage needs an
+        # explicit splits.json (the base raises), while predict stays valid either way.
+        self.OWNS_SPLITS = any(r["split"] for r in self._rows)
 
     @property
     def rows(self) -> list[dict]:
-        """Public read-only view of the parsed CSV rows (``split, cu3s_path, read_index, ...``)."""
+        """Public read-only view of the parsed universe rows (``source, index, split, ...``)."""
         return self._rows
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
-        """Validate that a ``splits_csv`` path is given, ends in ``.csv``, and exists."""
-        csv_path = params.get("splits_csv")
-        if not csv_path:
-            raise ValueError("cu3s_multi requires 'splits_csv' in params.")
-        if not str(csv_path).endswith(".csv"):
-            raise ValueError(f"splits_csv must end with .csv: {csv_path!r}")
-        if not Path(csv_path).is_file():
-            raise ValueError(f"splits_csv does not exist: {csv_path}")
+        """Validate that a ``universe_csv`` path is given, ends in ``.csv``, and exists."""
+        validate_universe_csv_param(params, "cu3s_multi")
 
     # -- module-owned path -----------------------------------------------------
     def build_stage_dataset(self, stage: str) -> Dataset:
@@ -161,16 +163,16 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
 
         refs: list[SampleRef] = []
         for rec in self._rows:
-            ann = rec["annotation_json"] or None
-            tags, cats = attrs(ann, int(rec["image_id"]))
+            ann = rec["annotation"] or None
+            tags, cats = attrs(ann, int(rec["index"]))
             refs.append(
                 SampleRef(
-                    source=rec["cu3s_path"],
-                    index=int(rec["read_index"]),
-                    label_id=int(rec["image_id"]),
-                    stem=Path(rec["cu3s_path"]).stem,
+                    source=rec["source"],
+                    index=int(rec["index"]),
+                    label_id=int(rec["index"]),
+                    stem=Path(rec["source"]).stem,
                     annotation=ann,
-                    group=rec["cu3s_path"],
+                    group=rec["group"] or rec["source"],
                     tags=tags,
                     category_ids=cats,
                 )
@@ -185,18 +187,21 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         return refs
 
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
-        """Build the dataset for the resolved subset, one row per ``SampleRef``."""
+        """Build the dataset for the resolved subset, mapping each ref to its universe row."""
+        by_identity = {(rec["source"], int(rec["index"])): rec for rec in self._rows}
         rows = []
         for i, ref in enumerate(refs):
-            read_index = int(ref.index if ref.index is not None else 0)
-            image_id = int(ref.label_id if ref.label_id is not None else read_index)
+            index = int(ref.index if ref.index is not None else 0)
+            rec = by_identity.get((ref.source, index))
+            if rec is None:
+                raise ValueError(f"ref ({ref.source}, {index}) has no matching row in the universe")
             rows.append(
                 {
                     "frame_id": i,
-                    "cu3s_path": ref.source,
-                    "annotation_json": ref.annotation or "",
-                    "image_id": image_id,
-                    "read_index": read_index,
+                    "source": rec["source"],
+                    "materialized_path": rec["materialized_path"],
+                    "annotation": rec["annotation"],
+                    "index": index,
                 }
             )
         return self._make_dataset(rows)
@@ -204,7 +209,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
     def category_name_to_id(self) -> dict[str, int] | None:
         """Map COCO category names to ids from the first annotated row, or None if unlabeled."""
         for rec in self._rows:
-            ann = rec["annotation_json"]
+            ann = rec["annotation"]
             if ann:
                 from .labelers.coco_labeler import CocoLabeler
 
@@ -218,7 +223,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
 
         require_cuvis()
         # COCO deps are only needed when at least one row carries an annotation.
-        if any(rec.get("annotation_json") for rec in rows):
+        if any(rec.get("annotation") for rec in rows):
             from ._extras import require_pycocotools, require_skimage_polygon2mask
 
             require_pycocotools()
@@ -227,66 +232,19 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         return _MultiCu3sDataset(rows, self._processing_mode)
 
     def _validate_read_indices(self, rows: list[dict[str, Any]]) -> None:
-        """Fail loud at build if any row's read_index is out of [0, total_measurements)."""
-        max_by_source: dict[str, int] = {}
+        """Fail loud at build if any row's read index is out of ``[0, total_measurements)``."""
+        max_by_path: dict[str, int] = {}
         for rec in rows:
-            read_index = int(rec["read_index"])
-            if read_index < 0:
-                raise ValueError(f"negative read_index {read_index} for {rec['cu3s_path']}")
-            src = rec["cu3s_path"]
-            max_by_source[src] = max(max_by_source.get(src, -1), read_index)
-        for src, max_ri in max_by_source.items():
-            reader = Cu3sCubeReader(src, processing_mode=self._processing_mode)
+            index = int(rec["index"])
+            if index < 0:
+                raise ValueError(f"negative read index {index} for {rec['materialized_path']}")
+            path = rec["materialized_path"]
+            max_by_path[path] = max(max_by_path.get(path, -1), index)
+        for path, max_idx in max_by_path.items():
+            reader = Cu3sCubeReader(path, processing_mode=self._processing_mode)
             try:
                 total = reader.total_measurements
             finally:
                 reader.close()
-            if max_ri >= total:
-                raise ValueError(f"row read_index {max_ri} >= {total} measurements in {src}")
-
-    def _parse_csv(self, csv_path: Path) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        frame_counter = 0
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            missing = [c for c in _REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
-            if missing:
-                raise ValueError(
-                    f"{csv_path}: missing required column(s) {missing}. "
-                    f"Required: {list(_REQUIRED_COLUMNS)}. Extra columns are allowed and ignored."
-                )
-            for row in reader:
-                cu3s_path = str(self._resolve(row["cu3s_path"]))
-                annotation_json = (
-                    str(self._resolve(row["annotation_json"])) if row["annotation_json"] else ""
-                )
-                # A ranged image_id ("0-5") fans the row out into one sample per measurement m
-                # (read measurement m, COCO image_id m); a scalar keeps the legacy single-frame
-                # behavior (read measurement 0).
-                cell = str(row["image_id"]).strip()
-                if "-" in cell:
-                    measurements = [int(x) for x in expand_range_selectors([cell])]
-                    ranged = True
-                else:
-                    measurements = [int(cell)]
-                    ranged = False
-                for m in measurements:
-                    out.append(
-                        {
-                            "frame_id": frame_counter,  # stable global row identity
-                            "split": row["split"],
-                            "cu3s_path": cu3s_path,
-                            "annotation_json": annotation_json,
-                            "image_id": m if ranged else int(cell),
-                            "read_index": m if ranged else 0,
-                        }
-                    )
-                    frame_counter += 1
-        if not out:
-            raise ValueError(f"{csv_path}: no rows.")
-        return out
-
-    def _resolve(self, raw: str) -> Path:
-        """Resolve relative paths against the CSV's parent dir; pass absolutes through."""
-        p = Path(raw)
-        return p if p.is_absolute() else (self._csv_dir / p).resolve()
+            if max_idx >= total:
+                raise ValueError(f"row read index {max_idx} >= {total} measurements in {path}")

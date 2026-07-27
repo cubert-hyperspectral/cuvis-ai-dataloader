@@ -41,11 +41,15 @@ Splits are defined in one of two ways:
   Composable selectors over an attributed sample universe are resolved into a
   committable `splits.json` by the `resolve-splits` CLI, then referenced from a
   `DataConfig.splits`.
-- **CSV `split` column** is a convenience for `cu3s_multi` (`split, cu3s_path,
-  annotation_json, image_id`): the CSV rows can become the selector universe, and
-  `resolve-splits --from-csv` turns that CSV into a committable `splits.json`.
-  `npz_multi` is selector-only: a `splits.json` (`DataConfig.splits`) over a
-  `universe_csv` (`source, index, path`).
+- **One `universe.csv` vocabulary** (`source, index` + optional `materialized_path, split,
+  annotation, format, group`) is read by both `cu3s_multi` and `npz_multi` through a shared
+  parser; each module keeps its own reader. `cu3s_multi` may carry an inline `split` column
+  (present → module-owned; absent → needs a `splits.json`), and `resolve-splits --from-csv`
+  turns that column into a committable `splits.json`. `npz_multi` is selector-only (it rejects a
+  `split` column) and requires `materialized_path` (the `.npz`); for `cu3s_multi`,
+  `materialized_path` defaults to `source` (a raw `.cu3s` is its own file). `source` is the posix
+  identity a `splits.json` selector keys on, so one split resolves against both the raw cu3s data
+  and the converted npz.
 
 ## Installation
 
@@ -132,8 +136,10 @@ Predictor(pipeline, dm).predict()
 - `mask` (optional): `[H, W]` int32 ground truth (zeros are emitted when absent)
 - `class_mask` (optional): `[H, W]` uint8 per-pixel COCO category id (0 = background)
 
-The `universe_csv` requires `source, index, path` (optional `annotation, format, group`; extra
-columns are ignored); `path` is relative to the CSV and must not escape it via `..`. Each sample is
+The `universe_csv` requires `source, index` plus `materialized_path` (the `.npz`, required for npz;
+optional `annotation, format, group`; extra columns are ignored); `materialized_path` is relative
+to the CSV and must not escape it via `..`. A `split` column is rejected here (npz is
+selector-only). Each sample is
 `{cube, mask, class_mask, wavelengths, mesu_index, frame_id}`. Unlike the cu3s modules, `npz_multi`
 honors `pin_memory` / `persistent_workers` / `worker_multiprocessing_context` (pure-CPU numpy loads
 benefit from them).
