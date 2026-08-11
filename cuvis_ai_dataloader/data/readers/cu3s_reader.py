@@ -19,7 +19,14 @@ from .._extras import require_cuvis
 class Cu3sCubeReader:
     """Reads cube frames from a ``.cu3s`` session via the cuvis SDK."""
 
-    def __init__(self, cu3s_file_path: str, *, processing_mode: str | None = "Reflectance") -> None:
+    def __init__(
+        self,
+        cu3s_file_path: str,
+        *,
+        processing_mode: str | None = "Reflectance",
+        white_ref: str | Path | None = None,
+        dark_ref: str | Path | None = None,
+    ) -> None:
         cuvis = require_cuvis()
         self.cu3s_file_path = str(cu3s_file_path)
         if not os.path.exists(self.cu3s_file_path):
@@ -36,6 +43,12 @@ class Cu3sCubeReader:
         except Exception:
             self.fps = None
 
+        # Custom references are installed BEFORE the processing mode is applied, so
+        # the Reflectance/SpectralRadiance validation can count them.
+        self._custom_ref_handles: list = []  # keep SDK handles alive for the reader's lifetime
+        self.custom_references = self._set_custom_references(
+            cuvis, white_ref=white_ref, dark_ref=dark_ref
+        )
         self._processing_applied = self._apply_processing_mode(cuvis, processing_mode)
 
         mesu0 = self.session.get_measurement(0)
@@ -46,6 +59,55 @@ class Cu3sCubeReader:
             f"Opened cu3s {self.cu3s_file_path}: {self.total_measurements} measurements, "
             f"{self.num_channels} channels"
         )
+
+    def _set_custom_references(
+        self, cuvis, *, white_ref: str | Path | None, dark_ref: str | Path | None
+    ) -> dict[str, str]:
+        """Override the session's baked white/dark references from external cu3s recordings.
+
+        Some sessions carry wrong baked references — e.g. a factory-fallback flat white/dark
+        captured at a mismatched integration time — which renders but is radiometrically wrong
+        (reflectance an order of magnitude off). Passing ``white_ref`` / ``dark_ref`` (paths to
+        cu3s reference recordings) re-references processing: each reference's **measurement 0**
+        is loaded via ``get_measurement(0)`` — deliberately NOT ``get_reference(...)``, which on
+        an affected recording can itself return the bogus baked factory reference — and installed
+        with ``ProcessingContext.set_reference`` before any ``apply``.
+
+        References should be day-matched to the measurement (same site/session conditions and
+        integration time); never cross days. Returns the applied overrides as
+        ``{"white": path, "dark": path}`` (only the ones given).
+        """
+        applied: dict[str, str] = {}
+        for kind, ref_path, ref_type in (
+            ("white", white_ref, cuvis.ReferenceType.White),
+            ("dark", dark_ref, cuvis.ReferenceType.Dark),
+        ):
+            if ref_path is None:
+                continue
+            ref_path = str(ref_path)
+            if not os.path.exists(ref_path):
+                raise ValueError(f"{kind} reference cu3s does not exist: {ref_path}")
+            if Path(ref_path).suffix != ".cu3s":
+                raise ValueError(f"{kind} reference must be a .cu3s file: {ref_path}")
+            ref_session = cuvis.SessionFile(ref_path)
+            try:
+                ref_mesu = ref_session.get_measurement(0)
+            except Exception as exc:
+                raise ValueError(
+                    f"failed to read measurement 0 of {kind} reference {ref_path}: {exc}"
+                ) from exc
+            if ref_mesu is None:
+                raise ValueError(f"{kind} reference {ref_path} has no measurement 0")
+            self.pc.set_reference(ref_mesu, ref_type)
+            self._custom_ref_handles.extend((ref_session, ref_mesu))
+            applied[kind] = ref_path
+            logger.info(
+                "cu3s {}: {} reference overridden from {}",
+                Path(self.cu3s_file_path).name,
+                kind,
+                ref_path,
+            )
+        return applied
 
     def _apply_processing_mode(self, cuvis, processing_mode) -> bool:
         """Configure the processing context for ``processing_mode``.
@@ -64,8 +126,16 @@ class Cu3sCubeReader:
                     "'SpectralRadiance')."
                 )
             processing_mode = resolved
-        has_white = self.session.get_reference(0, cuvis.ReferenceType.White) is not None
-        has_dark = self.session.get_reference(0, cuvis.ReferenceType.Dark) is not None
+        # A custom reference satisfies the requirement without consulting the session's
+        # baked references (short-circuit: get_reference is not even called for that slot).
+        has_white = (
+            "white" in self.custom_references
+            or self.session.get_reference(0, cuvis.ReferenceType.White) is not None
+        )
+        has_dark = (
+            "dark" in self.custom_references
+            or self.session.get_reference(0, cuvis.ReferenceType.Dark) is not None
+        )
         if processing_mode == cuvis.ProcessingMode.Reflectance and not (has_white and has_dark):
             raise ValueError(
                 "Reflectance processing mode requires both White and Dark references "
@@ -122,6 +192,14 @@ class Cu3sCubeReader:
                 except Exception:  # pragma: no cover - SDK teardown is best-effort
                     pass
             setattr(self, attr, None)
+        for obj in getattr(self, "_custom_ref_handles", ()):  # custom-reference sessions
+            closer = getattr(obj, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # pragma: no cover - SDK teardown is best-effort
+                    pass
+        self._custom_ref_handles = []
 
     def __enter__(self) -> Cu3sCubeReader:
         return self

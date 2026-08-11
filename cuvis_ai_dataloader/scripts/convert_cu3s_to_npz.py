@@ -10,6 +10,10 @@ Examples::
     cu3s-to-npz --cu3s-dir /data/lentils --out-dir /data/lentils_npz \
         --annotations sibling --universe-csv /data/lentils_npz/universe.csv
     cu3s-to-npz --cu3s a.cu3s b.cu3s --out-dir out --annotations coco.json --crop 300,300,300,300
+
+    # Re-reference a factory-fallback session against day-matched white/dark recordings:
+    cu3s-to-npz --cu3s bad_calib.cu3s --out-dir out --annotations none \
+        --white-ref day2_white.cu3s --dark-ref day2_dark.cu3s
 """
 
 from __future__ import annotations
@@ -59,6 +63,20 @@ def cu3s_to_npz_cli() -> None:
         help="cuvis ProcessingMode (default Reflectance; 'none' uses the recorded cube).",
     )
     parser.add_argument(
+        "--white-ref",
+        default=None,
+        metavar="CU3S",
+        help="cu3s recording whose measurement 0 overrides the baked White reference "
+        "(fixes factory-fallback sessions; day-matched refs only, applies to every input).",
+    )
+    parser.add_argument(
+        "--dark-ref",
+        default=None,
+        metavar="CU3S",
+        help="cu3s recording whose measurement 0 overrides the baked Dark reference "
+        "(fixes factory-fallback sessions; day-matched refs only, applies to every input).",
+    )
+    parser.add_argument(
         "--universe-csv",
         default=None,
         help="Write a source,index,materialized_path universe CSV here.",
@@ -84,6 +102,8 @@ def cu3s_to_npz_cli() -> None:
         annotations=annotations,
         crop=args.crop,
         processing_mode=processing_mode,
+        white_ref=args.white_ref,
+        dark_ref=args.dark_ref,
         universe_csv=args.universe_csv,
         compress=not args.no_compress,
         frame_limit=args.limit or None,
