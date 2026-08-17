@@ -308,3 +308,54 @@ def test_cli_defaults_refs_to_none(tmp_path):
     kwargs = conv.call_args.kwargs
     assert kwargs["white_ref"] is None
     assert kwargs["dark_ref"] is None
+
+
+# ------------------------------------------------------------------------- frame selection
+def test_reader_ref_frame_index(mock_cuvis_sdk, tmp_path):
+    # `path:N` selects measurement N of the reference session (a session holding several refs).
+    main = _make_cu3s(tmp_path)
+    white_session, white_mesu = _ref_session(mock_cuvis_sdk)
+    white_path = _make_cu3s(tmp_path, "white.cu3s")
+    _route_sessions(mock_cuvis_sdk, main, {white_path: white_session})
+
+    reader = Cu3sCubeReader(main, white_ref=f"{white_path}:5")
+
+    white_session.get_measurement.assert_called_once_with(5)
+    white_session.get_reference.assert_not_called()
+    mock_cuvis_sdk["processing_context"].set_reference.assert_any_call(white_mesu, "White")
+    assert reader.custom_references == {"white": f"{white_path}:5"}
+
+
+def test_reader_ref_embedded_minus1(mock_cuvis_sdk, tmp_path):
+    # `path:-1` uses the reference session's own embedded reference (get_reference on a PC),
+    # NOT get_measurement -- the one case where consulting get_reference is intentional.
+    main = _make_cu3s(tmp_path)
+    white_session, _ = _ref_session(mock_cuvis_sdk)
+    white_path = _make_cu3s(tmp_path, "white.cu3s")
+    _route_sessions(mock_cuvis_sdk, main, {white_path: white_session})
+    pc = mock_cuvis_sdk["processing_context"]
+    embedded = Mock(name="embedded_white_reference")
+    pc.get_reference = Mock(return_value=embedded)
+
+    reader = Cu3sCubeReader(main, white_ref=f"{white_path}:-1")
+
+    pc.get_reference.assert_any_call("White")
+    white_session.get_measurement.assert_not_called()
+    pc.set_reference.assert_any_call(embedded, "White")
+    assert reader.custom_references == {"white": f"{white_path}:-1"}
+
+
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        ("/a/b.cu3s", ("/a/b.cu3s", 0)),
+        ("/a/b.cu3s:0", ("/a/b.cu3s", 0)),
+        ("/a/b.cu3s:5", ("/a/b.cu3s", 5)),
+        ("/a/b.cu3s:-1", ("/a/b.cu3s", -1)),
+        ("/a/b.cu3s:notanint", ("/a/b.cu3s:notanint", 0)),
+    ],
+)
+def test_parse_ref_spec(spec, expected):
+    from cuvis_ai_dataloader.data.readers.cu3s_reader import _parse_ref_spec
+
+    assert _parse_ref_spec(spec) == expected

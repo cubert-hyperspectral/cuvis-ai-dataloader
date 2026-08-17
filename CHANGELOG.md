@@ -9,10 +9,13 @@ uses semantic versioning.
   accepts `white_ref` / `dark_ref` (paths to cu3s reference recordings) so an application can
   supply its own references at load time — reusing a shared calibration across sessions,
   non-destructively re-processing with updated references without re-exporting, or reading
-  sessions that carry no usable baked references. Each reference's **measurement 0** is loaded via
-  `get_measurement(0)` — deliberately not `get_reference(...)`, which on some sessions can return
-  an unintended baked reference — and installed with `ProcessingContext.set_reference` before the
-  processing mode is applied. A supplied reference also satisfies the Reflectance / SpectralRadiance
+  sessions that carry no usable baked references. Each reference is given as `path` or `path:frame`
+  — `path`/`path:0` uses the reference session's measurement 0, `path:N` uses measurement N (for a
+  session holding several references), and `path:-1` uses that session's embedded/baked reference
+  (matching `cuvis_batch_exporter`'s `:frame_no` with `-1` = embedded). References are loaded via
+  `get_measurement` — deliberately not `get_reference`, which on some sessions can return an
+  unintended baked reference, except the explicit `-1` embedded case — and installed with
+  `ProcessingContext.set_reference` before the processing mode is applied. A supplied reference also satisfies the Reflectance / SpectralRadiance
   reference validation. Threaded through `convert_cu3s_file` / `convert_cu3s` (`white_ref=` /
   `dark_ref=`) and the `cu3s-to-npz` CLI (`--white-ref` / `--dark-ref`). No references supplied →
   behaviour unchanged (baked references, bit-for-bit). This supplies references; it does not repair

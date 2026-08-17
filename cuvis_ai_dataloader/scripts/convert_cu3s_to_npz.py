@@ -65,16 +65,18 @@ def cu3s_to_npz_cli() -> None:
     parser.add_argument(
         "--white-ref",
         default=None,
-        metavar="CU3S",
-        help="cu3s recording whose measurement 0 overrides the baked White reference "
-        "(fixes factory-fallback sessions; day-matched refs only, applies to every input).",
+        metavar="CU3S[:FRAME]",
+        help="cu3s reference supplied as the White reference (overriding the baked one): "
+        "'path'/'path:0' = measurement 0, 'path:N' = measurement N, 'path:-1' = the session's "
+        "embedded reference. Applies to every input; use references matching the capture conditions.",
     )
     parser.add_argument(
         "--dark-ref",
         default=None,
-        metavar="CU3S",
-        help="cu3s recording whose measurement 0 overrides the baked Dark reference "
-        "(fixes factory-fallback sessions; day-matched refs only, applies to every input).",
+        metavar="CU3S[:FRAME]",
+        help="cu3s reference supplied as the Dark reference (overriding the baked one): "
+        "'path'/'path:0' = measurement 0, 'path:N' = measurement N, 'path:-1' = the session's "
+        "embedded reference. Applies to every input; use references matching the capture conditions.",
     )
     parser.add_argument(
         "--universe-csv",

@@ -121,7 +121,8 @@ def convert_cu3s_file(
     measurement index; frames absent/unannotated in the COCO get an all-zero mask (normal frame).
     When ``annotation_json`` is ``None`` no masks are written (the loader emits zeros).
 
-    ``white_ref`` / ``dark_ref`` (paths to cu3s reference recordings) supply custom references,
+    ``white_ref`` / ``dark_ref`` (each ``path`` or ``path:frame`` — ``path:N`` selects measurement
+    N of the reference session, ``path:-1`` its embedded reference) supply custom references,
     overriding the session's baked ones before processing — for reusing a shared calibration,
     non-destructive re-processing, or sessions lacking usable baked references (see
     :meth:`~cuvis_ai_dataloader.data.readers.cu3s_reader.Cu3sCubeReader._set_custom_references`).

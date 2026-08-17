@@ -16,6 +16,23 @@ from loguru import logger
 from .._extras import require_cuvis
 
 
+def _parse_ref_spec(spec: str) -> tuple[str, int]:
+    """Parse a reference spec ``"path"`` or ``"path:frame"`` into ``(path, frame)``.
+
+    ``frame`` defaults to ``0`` (the reference session's first measurement); ``frame == -1``
+    selects that session's own embedded/baked reference (matching ``cuvis_batch_exporter``'s
+    ``:frame_no`` with ``-1`` = embedded). The trailing ``:`` is split off only when the tail is
+    an integer, so plain paths (including paths that carry no frame suffix) are unaffected.
+    """
+    head, sep, tail = spec.rpartition(":")
+    if sep and head:
+        try:
+            return head, int(tail)
+        except ValueError:
+            pass
+    return spec, 0
+
+
 class Cu3sCubeReader:
     """Reads cube frames from a ``.cu3s`` session via the cuvis SDK."""
 
@@ -68,47 +85,72 @@ class Cu3sCubeReader:
         Lets an application supply its own references at load time instead of the ones baked into
         the session — e.g. reusing a shared calibration across sessions, non-destructively
         re-processing with updated references without re-exporting, or reading sessions that carry
-        no usable baked references. Each reference's **measurement 0** is loaded via
-        ``get_measurement(0)`` — deliberately NOT ``get_reference(...)``, which on some sessions can
-        return an unintended baked reference — and installed with ``ProcessingContext.set_reference``
-        before any ``apply``.
+        no usable baked references.
+
+        Each reference is given as ``path`` or ``path:frame``: ``path`` / ``path:0`` uses the
+        reference session's **measurement 0** (the default); ``path:N`` uses measurement ``N`` (for a
+        session that holds several references); and ``path:-1`` uses that session's own
+        **embedded/baked** reference (matching ``cuvis_batch_exporter``'s ``:frame_no`` with ``-1`` =
+        embedded). References are loaded via ``get_measurement`` — deliberately NOT
+        ``get_reference``, which on some sessions can return an unintended baked reference — except
+        the explicit ``-1`` case, which asks for the embedded reference on purpose. The chosen
+        reference is installed with ``ProcessingContext.set_reference`` before any ``apply``.
 
         This *supplies* references; it does not *repair* wrong ones. If a session's baked references
         are actually incorrect, that is a data problem — correct them at the source with the exporter
         (``cuvis_batch_exporter --force_white/--force_dark``), which is byte-identical to this
         override. Supplied references should match the measurement's capture conditions (same
         site/session and integration time). Returns the applied overrides as
-        ``{"white": path, "dark": path}`` (only the ones given).
+        ``{"white": spec, "dark": spec}`` (only the ones given, echoing the input spec).
         """
         applied: dict[str, str] = {}
-        for kind, ref_path, ref_type in (
+        for kind, ref_spec, ref_type in (
             ("white", white_ref, cuvis.ReferenceType.White),
             ("dark", dark_ref, cuvis.ReferenceType.Dark),
         ):
-            if ref_path is None:
+            if ref_spec is None:
                 continue
-            ref_path = str(ref_path)
+            ref_spec = str(ref_spec)
+            ref_path, frame = _parse_ref_spec(ref_spec)
             if not os.path.exists(ref_path):
                 raise ValueError(f"{kind} reference cu3s does not exist: {ref_path}")
             if Path(ref_path).suffix != ".cu3s":
                 raise ValueError(f"{kind} reference must be a .cu3s file: {ref_path}")
             ref_session = cuvis.SessionFile(ref_path)
-            try:
-                ref_mesu = ref_session.get_measurement(0)
-            except Exception as exc:
-                raise ValueError(
-                    f"failed to read measurement 0 of {kind} reference {ref_path}: {exc}"
-                ) from exc
-            if ref_mesu is None:
-                raise ValueError(f"{kind} reference {ref_path} has no measurement 0")
+            self._custom_ref_handles.append(ref_session)
+            if frame < 0:
+                # Explicit opt-in to the reference session's own embedded/baked reference
+                # (``path:-1``). Unlike the get_measurement path this consults get_reference,
+                # because the user has asked for the embedded reference specifically.
+                ref_pc = cuvis.ProcessingContext(ref_session)
+                self._custom_ref_handles.append(ref_pc)
+                try:
+                    ref_mesu = ref_pc.get_reference(ref_type)
+                except Exception as exc:
+                    raise ValueError(
+                        f"failed to read embedded {kind} reference from {ref_path}: {exc}"
+                    ) from exc
+                if ref_mesu is None:
+                    raise ValueError(
+                        f"{kind} reference {ref_path} has no embedded {kind} reference (frame -1)"
+                    )
+            else:
+                try:
+                    ref_mesu = ref_session.get_measurement(frame)
+                except Exception as exc:
+                    raise ValueError(
+                        f"failed to read measurement {frame} of {kind} reference {ref_path}: {exc}"
+                    ) from exc
+                if ref_mesu is None:
+                    raise ValueError(f"{kind} reference {ref_path} has no measurement {frame}")
             self.pc.set_reference(ref_mesu, ref_type)
-            self._custom_ref_handles.extend((ref_session, ref_mesu))
-            applied[kind] = ref_path
+            self._custom_ref_handles.append(ref_mesu)
+            applied[kind] = ref_spec
             logger.info(
                 "cu3s {}: {} reference overridden from {}",
                 Path(self.cu3s_file_path).name,
                 kind,
-                ref_path,
+                ref_spec,
             )
         return applied
 
