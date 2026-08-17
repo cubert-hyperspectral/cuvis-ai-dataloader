@@ -102,6 +102,7 @@ testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow",
     "gpu: marks tests that require a GPU",
+    "integration: real-SDK tests needing cuvis + .cu3s data (skipped unless CUVIS_AI_IT_* env vars are set)",
 ]
 
 [tool.ruff]
