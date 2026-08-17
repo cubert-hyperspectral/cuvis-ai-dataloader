@@ -5,20 +5,22 @@ uses semantic versioning.
 
 ## Unreleased
 
-- **Custom white/dark reference override for the cu3s reflectance path.** Some sessions
-  captured through a factory fallback carry wrong baked references (a flat factory white/dark
-  at a mismatched integration time): they render, but reflectance comes out roughly an order of
-  magnitude too low. `Cu3sCubeReader` now accepts `white_ref` / `dark_ref` (paths to cu3s
-  reference recordings): each reference's **measurement 0** is loaded via `get_measurement(0)` —
-  deliberately not `get_reference(...)`, which on an affected recording can itself return the
-  bogus baked factory reference — and installed with `ProcessingContext.set_reference` before
-  the processing mode is applied. A custom reference also satisfies the Reflectance /
-  SpectralRadiance reference validation, so sessions without usable baked references become
-  readable when re-referenced. Threaded through `convert_cu3s_file` / `convert_cu3s`
-  (`white_ref=` / `dark_ref=`) and the `cu3s-to-npz` CLI (`--white-ref` / `--dark-ref`).
-  No references supplied → behaviour unchanged (baked references, bit-for-bit). Use
-  day-matched references only; with `resume=True` previously-converted npz are reused as-is,
-  so clear the output dir when re-converting with different references.
+- **Custom white/dark reference override for the cu3s reflectance path.** `Cu3sCubeReader` now
+  accepts `white_ref` / `dark_ref` (paths to cu3s reference recordings) so an application can
+  supply its own references at load time — reusing a shared calibration across sessions,
+  non-destructively re-processing with updated references without re-exporting, or reading
+  sessions that carry no usable baked references. Each reference's **measurement 0** is loaded via
+  `get_measurement(0)` — deliberately not `get_reference(...)`, which on some sessions can return
+  an unintended baked reference — and installed with `ProcessingContext.set_reference` before the
+  processing mode is applied. A supplied reference also satisfies the Reflectance / SpectralRadiance
+  reference validation. Threaded through `convert_cu3s_file` / `convert_cu3s` (`white_ref=` /
+  `dark_ref=`) and the `cu3s-to-npz` CLI (`--white-ref` / `--dark-ref`). No references supplied →
+  behaviour unchanged (baked references, bit-for-bit). This supplies references; it does not repair
+  wrong ones — if a session's baked references are incorrect, correct them at the source with the
+  exporter (`cuvis_batch_exporter --force_white/--force_dark`), byte-identical to this override.
+  Use references matching the measurement's capture conditions; with `resume=True`
+  previously-converted npz are reused as-is, so clear the output dir when re-converting with
+  different references.
 
 ## 0.5.0 - 2026-07-27
 

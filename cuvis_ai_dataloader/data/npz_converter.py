@@ -121,9 +121,9 @@ def convert_cu3s_file(
     measurement index; frames absent/unannotated in the COCO get an all-zero mask (normal frame).
     When ``annotation_json`` is ``None`` no masks are written (the loader emits zeros).
 
-    ``white_ref`` / ``dark_ref`` (paths to cu3s reference recordings) override the session's
-    baked references before processing — the fix for factory-fallback sessions whose baked
-    white/dark are radiometrically wrong (see
+    ``white_ref`` / ``dark_ref`` (paths to cu3s reference recordings) supply custom references,
+    overriding the session's baked ones before processing — for reusing a shared calibration,
+    non-destructive re-processing, or sessions lacking usable baked references (see
     :meth:`~cuvis_ai_dataloader.data.readers.cu3s_reader.Cu3sCubeReader._set_custom_references`).
     Use day-matched references only. With ``resume=True`` an existing valid ``.npz`` is reused
     AS-IS — it does not know which references produced it — so when re-converting with

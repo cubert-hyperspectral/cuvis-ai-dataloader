@@ -63,18 +63,21 @@ class Cu3sCubeReader:
     def _set_custom_references(
         self, cuvis, *, white_ref: str | Path | None, dark_ref: str | Path | None
     ) -> dict[str, str]:
-        """Override the session's baked white/dark references from external cu3s recordings.
+        """Override the session's baked white/dark references with external cu3s recordings.
 
-        Some sessions carry wrong baked references — e.g. a factory-fallback flat white/dark
-        captured at a mismatched integration time — which renders but is radiometrically wrong
-        (reflectance an order of magnitude off). Passing ``white_ref`` / ``dark_ref`` (paths to
-        cu3s reference recordings) re-references processing: each reference's **measurement 0**
-        is loaded via ``get_measurement(0)`` — deliberately NOT ``get_reference(...)``, which on
-        an affected recording can itself return the bogus baked factory reference — and installed
-        with ``ProcessingContext.set_reference`` before any ``apply``.
+        Lets an application supply its own references at load time instead of the ones baked into
+        the session — e.g. reusing a shared calibration across sessions, non-destructively
+        re-processing with updated references without re-exporting, or reading sessions that carry
+        no usable baked references. Each reference's **measurement 0** is loaded via
+        ``get_measurement(0)`` — deliberately NOT ``get_reference(...)``, which on some sessions can
+        return an unintended baked reference — and installed with ``ProcessingContext.set_reference``
+        before any ``apply``.
 
-        References should be day-matched to the measurement (same site/session conditions and
-        integration time); never cross days. Returns the applied overrides as
+        This *supplies* references; it does not *repair* wrong ones. If a session's baked references
+        are actually incorrect, that is a data problem — correct them at the source with the exporter
+        (``cuvis_batch_exporter --force_white/--force_dark``), which is byte-identical to this
+        override. Supplied references should match the measurement's capture conditions (same
+        site/session and integration time). Returns the applied overrides as
         ``{"white": path, "dark": path}`` (only the ones given).
         """
         applied: dict[str, str] = {}

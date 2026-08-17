@@ -38,13 +38,13 @@ def _make_cu3s(tmp_path, name="x.cu3s"):
 def _ref_session(mock_cuvis_sdk):
     """A distinct reference session whose measurement 0 is a unique sentinel.
 
-    Its ``get_reference`` is rigged to return the BOGUS baked factory reference, so a
+    Its ``get_reference`` is rigged to return an unintended baked reference, so a
     test can prove the reader never consults it when loading a custom reference.
     """
     ref_mesu = Mock(name="ref_measurement_0")
     session = Mock(name="ref_session")
     session.get_measurement = Mock(return_value=ref_mesu)
-    session.get_reference = Mock(return_value=Mock(name="bogus_factory_reference"))
+    session.get_reference = Mock(return_value=Mock(name="unintended_baked_reference"))
     return session, ref_mesu
 
 
@@ -83,8 +83,8 @@ def test_reader_installs_custom_references(mock_cuvis_sdk, tmp_path):
 
 
 def test_reader_loads_refs_via_get_measurement_not_get_reference(mock_cuvis_sdk, tmp_path):
-    # The known SDK trap: a reference cu3s' own get_reference can return the bogus baked
-    # factory reference. The override must come from get_measurement(0).
+    # The known SDK trap: a reference cu3s' own get_reference can return an unintended baked
+    # reference. The override must come from get_measurement(0).
 
     main = _make_cu3s(tmp_path)
     white_session, white_mesu = _ref_session(mock_cuvis_sdk)
