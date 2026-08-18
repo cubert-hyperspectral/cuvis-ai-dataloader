@@ -3,6 +3,28 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## Unreleased
+
+- **Custom white/dark reference override for the cu3s reflectance path.** `Cu3sCubeReader` now
+  accepts `white_ref` / `dark_ref` (paths to cu3s reference recordings) so an application can
+  supply its own references at load time — reusing a shared calibration across sessions,
+  non-destructively re-processing with updated references without re-exporting, or reading
+  sessions that carry no usable baked references. Each reference is given as `path` or `path:frame`
+  — `path`/`path:0` uses the reference session's measurement 0, `path:N` uses measurement N (for a
+  session holding several references), and `path:-1` uses that session's embedded/baked reference
+  (matching `cuvis_batch_exporter`'s `:frame_no` with `-1` = embedded). References are loaded via
+  `get_measurement` — deliberately not `get_reference`, which on some sessions can return an
+  unintended baked reference, except the explicit `-1` embedded case — and installed with
+  `ProcessingContext.set_reference` before the processing mode is applied. A supplied reference also satisfies the Reflectance / SpectralRadiance
+  reference validation. Threaded through `convert_cu3s_file` / `convert_cu3s` (`white_ref=` /
+  `dark_ref=`) and the `cu3s-to-npz` CLI (`--white-ref` / `--dark-ref`). No references supplied →
+  behaviour unchanged (baked references, bit-for-bit). This supplies references; it does not repair
+  wrong ones — if a session's baked references are incorrect, correct them at the source with the
+  exporter (`cuvis_batch_exporter --force_white/--force_dark`), byte-identical to this override.
+  Use references matching the measurement's capture conditions; with `resume=True`
+  previously-converted npz are reused as-is, so clear the output dir when re-converting with
+  different references.
+
 ## 0.5.0 - 2026-07-27
 
 - **cu3s reader cache is now a bounded LRU with close-on-evict.** `_Cu3sRefDataset` keeps at most `max_open_sessions` (default 4) open SDK sessions in an LRU, closing the least-recently-used on eviction (and via `close()` / `__del__`); each open Reflectance session holds native SDK GPU pools, and too many open at once crash the SDK's CUDA allocator ("illegal memory access") when torch shares the GPU. Keeps the per-dataset session footprint flat across a shuffled multi-file epoch.

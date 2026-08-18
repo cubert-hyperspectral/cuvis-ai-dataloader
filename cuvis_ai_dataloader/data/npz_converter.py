@@ -107,6 +107,8 @@ def convert_cu3s_file(
     annotation_json: str | Path | None = None,
     crop: CropMargins | None = None,
     processing_mode: str | None = "Reflectance",
+    white_ref: str | Path | None = None,
+    dark_ref: str | Path | None = None,
     frame_indices: list[int] | None = None,
     frame_limit: int | None = None,
     compress: bool = True,
@@ -118,6 +120,15 @@ def convert_cu3s_file(
     masks together (so polygon coordinates stay aligned). A frame's COCO ``image_id`` is its cu3s
     measurement index; frames absent/unannotated in the COCO get an all-zero mask (normal frame).
     When ``annotation_json`` is ``None`` no masks are written (the loader emits zeros).
+
+    ``white_ref`` / ``dark_ref`` (each ``path`` or ``path:frame`` — ``path:N`` selects measurement
+    N of the reference session, ``path:-1`` its embedded reference) supply custom references,
+    overriding the session's baked ones before processing — for reusing a shared calibration,
+    non-destructive re-processing, or sessions lacking usable baked references (see
+    :meth:`~cuvis_ai_dataloader.data.readers.cu3s_reader.Cu3sCubeReader._set_custom_references`).
+    Use day-matched references only. With ``resume=True`` an existing valid ``.npz`` is reused
+    AS-IS — it does not know which references produced it — so when re-converting with
+    different references, clear ``out_dir`` (or leave ``resume`` off).
 
     ``frame_indices`` selects specific measurements (validated against the cu3s length);
     ``frame_limit`` converts only the first N (clamped to the length). Output names are prefixed
@@ -160,8 +171,15 @@ def convert_cu3s_file(
     from .readers.cu3s_reader import Cu3sCubeReader
 
     labeler = CocoLabeler(annotation_json) if annotation_json is not None else None
+    # Only pass the reference overrides when actually set, so the no-override call stays
+    # identical to before (and reader stand-ins without these kwargs keep working).
+    ref_kwargs: dict[str, Any] = {}
+    if white_ref is not None:
+        ref_kwargs["white_ref"] = white_ref
+    if dark_ref is not None:
+        ref_kwargs["dark_ref"] = dark_ref
     records: list[dict[str, Any]] = []
-    with Cu3sCubeReader(str(cu3s_path), processing_mode=processing_mode) as reader:
+    with Cu3sCubeReader(str(cu3s_path), processing_mode=processing_mode, **ref_kwargs) as reader:
         total = int(reader.total_measurements)
         if frame_indices is not None:
             bad = [int(i) for i in frame_indices if not (0 <= int(i) < total)]
@@ -233,6 +251,8 @@ def convert_cu3s(
     annotations: Any = "sibling",
     crop: CropMargins | None = None,
     processing_mode: str | None = "Reflectance",
+    white_ref: str | Path | None = None,
+    dark_ref: str | Path | None = None,
     universe_csv: str | Path | None = None,
     compress: bool = True,
     frame_limit: int | None = None,
@@ -240,6 +260,10 @@ def convert_cu3s(
     """Convert many ``.cu3s`` files; optionally write a combined universe CSV. Returns all records.
 
     ``frame_limit`` (if set) converts only the first N frames of each file (for smoke runs).
+    ``white_ref`` / ``dark_ref`` override the baked references for EVERY input file (see
+    :func:`convert_cu3s_file`) — only batch files that share the same day-matched references;
+    the deliberately-heterogeneous converters (:func:`convert_split_manifest` /
+    :func:`convert_universe`) do not take a global override for exactly that reason.
     """
     # Output names are {parent}_{stem}_{i}.npz in one flat out_dir; two inputs sharing both
     # parent-folder and stem would overwrite each other, so reject that up front.
@@ -259,6 +283,8 @@ def convert_cu3s(
                 annotation_json=_resolve_annotation(p, annotations),
                 crop=crop,
                 processing_mode=processing_mode,
+                white_ref=white_ref,
+                dark_ref=dark_ref,
                 frame_limit=frame_limit,
                 compress=compress,
             )
