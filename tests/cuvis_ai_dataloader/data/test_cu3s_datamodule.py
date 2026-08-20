@@ -336,3 +336,69 @@ def test_invalid_frames_rejected(tmp_path):
         Cu3sDataModule.validate_params({"data_dir": str(folder), "frames": "frame"})
     with pytest.raises(ValueError, match="recursive"):
         Cu3sDataModule.validate_params({"data_dir": str(folder), "recursive": "yes-please"})
+
+
+# --------------------------------------------------------- batched fetch + reader threads
+def test_getitems_matches_per_index_reads(mock_cuvis_sdk, tmp_path):
+    # torch calls __getitems__ instead of __getitem__ per index, so the two must agree.
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), measurement_indices=[0, 2, 4])
+    dm.setup(stage="predict")
+    ds = dm.predict_ds
+    indices = [2, 0, 1]
+    batched = ds.__getitems__(indices)
+    assert [i["mesu_index"] for i in batched] == [ds[i]["mesu_index"] for i in indices]
+    assert [i["read_index"] for i in batched] == [ds[i]["read_index"] for i in indices]
+
+
+def test_getitems_spans_several_recordings_in_order(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=3)
+    dm = Cu3sDataModule(data_dir=str(folder), frames="measurements", batch_size=2)
+    dm.setup(stage="predict")
+    ds = dm.predict_ds
+    indices = [0, len(ds) - 1, 1]
+    assert [i["stem"] for i in ds.__getitems__(indices)] == [ds[i]["stem"] for i in indices]
+
+
+def test_dataloader_uses_the_batched_hook(mock_cuvis_sdk, tmp_path):
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), batch_size=3)
+    dm.setup(stage="predict")
+    assert hasattr(dm.predict_ds, "__getitems__")
+    batch = next(iter(dm.predict_dataloader()))
+    assert batch["cube"].shape[0] == 3
+
+
+def test_reader_threads_rejects_process_workers(tmp_path):
+    # Each worker process would build its own sessions and its own ProcessingContext.
+    with pytest.raises(ValueError, match="cannot be combined with num_workers"):
+        Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), read_threads=4, num_workers=2)
+
+
+def test_reader_threads_rejects_negative(tmp_path):
+    with pytest.raises(ValueError, match="read_threads must be >= 0"):
+        Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), read_threads=-1)
+
+
+def test_reader_threads_arrives_through_the_params_shape(mock_cuvis_sdk, tmp_path):
+    dm = Cu3sDataModule(
+        **{
+            "data_module": "cu3s",
+            "splits": {"predict": []},
+            "batch_size": 2,
+            "num_workers": 0,
+            "params": {"cu3s_file_path": _make_cu3s(tmp_path), "read_threads": 4},
+        }
+    )
+    assert dm.read_threads == 4
+
+
+def test_source_coherent_batches_keep_a_batch_within_one_recording(mock_cuvis_sdk, tmp_path):
+    folder = _make_cu3s_folder(tmp_path, n=3)
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        frames="measurements",
+        batch_size=7,
+        source_coherent_batches=True,
+    )
+    dm.setup(stage="predict")
+    stems = {tuple(sorted(set(b["stem"]))) for b in dm.predict_dataloader()}
+    assert all(len(s) == 1 for s in stems)

@@ -87,6 +87,14 @@ def cu3s_to_npz_cli() -> None:
         "--limit", type=int, default=0, help="Convert at most N frames per cu3s (0 = all)."
     )
     parser.add_argument("--no-compress", action="store_true", help="Write uncompressed .npz.")
+    parser.add_argument(
+        "--read-threads",
+        type=int,
+        default=0,
+        help="Read each cu3s on N session handles sharing one processing context (0 = off, "
+        "6 recommended on GPU). Needs a cuvis binding that releases the GIL; on one that does "
+        "not it warns and reads single-threaded.",
+    )
     args = parser.parse_args()
 
     paths: list[Path] = [Path(p) for p in args.cu3s]
@@ -109,6 +117,7 @@ def cu3s_to_npz_cli() -> None:
         universe_csv=args.universe_csv,
         compress=not args.no_compress,
         frame_limit=args.limit or None,
+        read_threads=args.read_threads,
     )
     print(f"wrote {len(records)} npz frame(s) from {len(paths)} cu3s into {args.out_dir}")
     if args.universe_csv:

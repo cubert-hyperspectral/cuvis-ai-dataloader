@@ -219,3 +219,37 @@ def test_read_index_exceeding_measurements_raises_at_build(mock_cuvis_sdk, tmp_p
     dm = MultiCu3sDataModule(universe_csv=str(csv_path))
     with pytest.raises(ValueError, match="read index 99 >= 7"):
         dm.setup(stage="fit")
+
+
+# --------------------------------------------------------- batched fetch + reader threads
+def test_open_sessions_are_bounded_and_closed_on_evict(mock_cuvis_sdk, tmp_path):
+    # The reader cache replaced an unbounded dict here; past a handful of concurrent
+    # Reflectance sessions the SDK's CUDA allocator kills the process.
+    dm = MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), max_open_sessions=1)
+    dm.setup(stage="predict")
+    ds = dm._predict_ds
+    for i in range(len(ds)):
+        ds[i]
+    assert len(ds._cache._readers) == 1
+
+
+def test_getitems_matches_per_index_reads(mock_cuvis_sdk, tmp_path):
+    dm = MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), split="all")
+    dm.setup(stage="predict")
+    ds = dm._predict_ds
+    indices = list(reversed(range(len(ds))))
+    batched = ds.__getitems__(indices)
+    assert [i["frame_id"] for i in batched] == [ds[i]["frame_id"] for i in indices]
+    assert [i["read_index"] for i in batched] == [ds[i]["read_index"] for i in indices]
+
+
+def test_reader_threads_rejects_process_workers(tmp_path):
+    with pytest.raises(ValueError, match="cannot be combined with num_workers"):
+        MultiCu3sDataModule(
+            universe_csv=str(_write_dataset(tmp_path)), read_threads=4, num_workers=2
+        )
+
+
+def test_max_open_sessions_must_be_positive(tmp_path):
+    with pytest.raises(ValueError, match="max_open_sessions must be >= 1"):
+        MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), max_open_sessions=0)
