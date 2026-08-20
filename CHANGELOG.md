@@ -3,8 +3,11 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## Unreleased
+## 0.5.1 - 2026-08-20
 
+- Documented the torch cu128 index tables as local-development-only: installs of this package
+  as a git or registry dependency never read them, and composed child environments mirror the
+  host's torch build (cuvis-ai-core >= 0.12.1).
 - **Custom white/dark reference override for the cu3s reflectance path.** `Cu3sCubeReader` now
   accepts `white_ref` / `dark_ref` (paths to cu3s reference recordings) so an application can
   supply its own references at load time — reusing a shared calibration across sessions,
