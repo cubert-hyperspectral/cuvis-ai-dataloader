@@ -8,6 +8,7 @@ cube dicts. The heavy ``cuvis`` import happens lazily in ``__init__`` via
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -58,6 +59,16 @@ def _parse_ref_spec(spec: str) -> tuple[str, int]:
         except ValueError:
             pass
     return spec, 0
+
+
+def total_measurements_of(cu3s_file_path: str | Path) -> int:
+    """Frame count of a ``.cu3s`` without building a ProcessingContext.
+
+    ``Cu3sCubeReader`` builds one in ``__init__`` whatever the processing mode, and that build
+    is the expensive part, so a probe that only wants the count must not go through it.
+    """
+    cuvis = require_cuvis()
+    return int(len(cuvis.SessionFile(str(cu3s_file_path))))
 
 
 class Cu3sCubeReader:
@@ -238,7 +249,15 @@ class Cu3sCubeReader:
 
     def read(self, mesu_index: int) -> dict:
         """Return ``{"cube", "mesu_index", "wavelengths"}`` for one measurement."""
-        mesu = self.session.get_measurement(mesu_index)
+        return self._read_with(self.session, mesu_index)
+
+    def _read_with(self, session, mesu_index: int) -> dict:
+        """Read one measurement through ``session``, sharing this reader's context.
+
+        Split out so a pooled subclass can read on a leased handle without copying the
+        processing-mode rule below, which the two must not drift on.
+        """
+        mesu = session.get_measurement(mesu_index)
         # A requested processing mode is always applied: a cube already present in mesu.data may
         # be the recorded (raw) cube, so trusting it would silently bypass the requested mode.
         # With no mode set (processing_mode=None) the file's data is used as-is unless absent.
@@ -251,6 +270,18 @@ class Cu3sCubeReader:
             "mesu_index": int(mesu_index),
             "wavelengths": wavelengths,
         }
+
+    def iter_reads(self, indices: Iterable[int]) -> Iterator[dict]:
+        """Yield one read per index, in the order requested."""
+        return (self.read(index) for index in indices)
+
+    def read_many(self, indices: Sequence[int]) -> list[dict]:
+        """Read several measurements, in the order requested.
+
+        Defined here so callers can hand a whole batch over without caring which reader they
+        hold; ``Cu3sPrefetchReader`` overrides ``iter_reads`` to overlap them.
+        """
+        return list(self.iter_reads(indices))
 
     def close(self) -> None:
         """Release the SDK processing context + session (best-effort).

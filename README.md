@@ -126,6 +126,65 @@ dm = Cu3sDataModule(cu3s_file_path="X.cu3s", batch_size=1)
 Predictor(pipeline, dm).predict()
 ```
 
+### Threaded cu3s reading (`read_threads`)
+
+Reading a cu3s frame is dominated by the SDK, not by Python: about 58 ms of disk load plus
+33 ms of processing per cube.
+`read_threads` reads a batch on several `SessionFile` handles at once, all sharing one
+`ProcessingContext`, which is the only topology measured to produce correct cubes.
+It is off by default.
+
+```yaml
+data:
+  data_module: cu3s
+  batch_size: 6          # the lever: concurrency is bounded by the batch
+  num_workers: 0         # required; reader threads replace worker processes
+  params:
+    cu3s_file_path: X.cu3s
+    read_threads: 6
+```
+
+Measured on one 940-frame session, GPU Raw mode, 20 cores and an RTX 4070:
+
+| read_threads | fps |
+| --- | --- |
+| 1 | 15.1 |
+| 2 | 26.3 |
+| 4 | 44.6 |
+| 6 | 55.1 |
+| 20 | 70.2 |
+
+Six is the knee: it reaches 78% of the ceiling, and going to 20 buys 27% more throughput for
+2.7x the memory.
+Budget roughly 0.35 GB of RSS per handle.
+
+Things worth knowing before turning it on:
+
+- **It needs a cuvis binding that releases the GIL.** No published wheel carries that yet. On a
+  binding that holds it, extra threads are a small loss rather than a gain, so the reader probes
+  the binding once per process and falls back to single-threaded reads with a warning.
+- **Concurrency equals `batch_size`.** torch hands a dataset a whole batch of indices at once and
+  nothing earlier, so `batch_size: 1` gets no speedup however high `read_threads` is.
+- **`num_workers` must be 0.** Worker processes each build their own sessions and their own
+  processing context, so combining the two multiplies both; the module raises instead.
+- **`samples_per_frame > 1` disables it for the train loader only.** The repeat wrapper in
+  `cuvis-ai-core` does not forward the batched fetch. Validation, test and predict are unaffected.
+- **CPU processing mode barely benefits.** There the lever is `processing_thread_count` in
+  `cuvis.settings`, not this parameter.
+- **Multi-file spends the budget across recordings, not inside them.** `read_threads` is divided
+  by the number of sessions the dataset holds open, so the handle count stays flat; a multi-file
+  epoch is bounded by per-file context builds rather than by reads.
+  `source_coherent_batches: true` keeps each batch inside one recording so the reader cache stops
+  evicting mid-batch, at the cost of changing which samples share a batch. It replaces the
+  loader's sampler, so it cannot be used under DDP.
+
+The npz converter takes the same parameter and needs no batch size, since it already knows every
+index it will read:
+
+```bash
+cu3s-to-npz --cu3s X.cu3s --out-dir out --annotations sibling --read-threads 6
+```
+
 ### NPZ (`npz_multi`)
 
 `npz_multi` loads one frame per compressed `.npz`, selected by a `splits.json` over a
