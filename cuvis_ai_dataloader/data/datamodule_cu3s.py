@@ -21,18 +21,18 @@ whole universe.
 from __future__ import annotations
 
 import os
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule, DataStage
 from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef
 
 from ._extras import accepts_data_config, parse_bool, parse_int_list
-from .readers.cu3s_reader import Cu3sCubeReader
+from .readers.cu3s_pool import Cu3sReaderCache, SourceCoherentBatchSampler
+from .readers.cu3s_reader import Cu3sCubeReader, total_measurements_of
 
 
 def _sibling_json(annotation_json_path, cu3s_file_path) -> str | None:
@@ -62,41 +62,33 @@ class _Cu3sRefDataset(Dataset):
     """
 
     def __init__(
-        self, refs: list[SampleRef], processing_mode: str, *, max_open_sessions: int = 4
+        self,
+        refs: list[SampleRef],
+        processing_mode: str,
+        *,
+        max_open_sessions: int = 4,
+        read_threads: int = 0,
     ) -> None:
-        if max_open_sessions < 1:
-            raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
         self._refs = refs
         self._processing_mode = processing_mode
-        self._max_open_sessions = int(max_open_sessions)
-        self._readers: OrderedDict[str, Cu3sCubeReader] = OrderedDict()
+        self._cache = Cu3sReaderCache(
+            processing_mode=processing_mode,
+            max_open_sessions=max_open_sessions,
+            read_threads=read_threads,
+            sources=len({ref.source for ref in refs}) or 1,
+        )
         self._labelers: dict[str, Any] = {}
 
     def __getstate__(self) -> dict:
-        # Drop cached SDK readers/labelers before pickling to DataLoader workers; each
-        # worker reopens its own session lazily in __getitem__ (native handles don't pickle).
+        # Drop cached labelers before pickling to DataLoader workers; the reader cache drops
+        # its own native handles, which do not pickle.
         state = self.__dict__.copy()
-        state["_readers"] = OrderedDict()
         state["_labelers"] = {}
         return state
 
-    def _reader_for(self, source: str) -> Cu3sCubeReader:
-        reader = self._readers.get(source)
-        if reader is not None:
-            self._readers.move_to_end(source)
-            return reader
-        while len(self._readers) >= self._max_open_sessions:
-            _, evicted = self._readers.popitem(last=False)
-            evicted.close()
-        reader = Cu3sCubeReader(source, processing_mode=self._processing_mode)
-        self._readers[source] = reader
-        return reader
-
     def close(self) -> None:
         """Release every cached SDK session (safe to call repeatedly)."""
-        while self._readers:
-            _, reader = self._readers.popitem(last=False)
-            reader.close()
+        self._cache.close()
 
     def __del__(self) -> None:  # best-effort: replaced datasets free their sessions
         try:
@@ -115,6 +107,11 @@ class _Cu3sRefDataset(Dataset):
         return len(self._refs)
 
     @property
+    def sample_sources(self) -> list[str]:
+        """The cu3s each sample reads from, positionally, for source-coherent batching."""
+        return [ref.source for ref in self._refs]
+
+    @property
     def wavelengths_nm(self) -> np.ndarray:
         """Per-channel wavelengths (nm, int32) read from the first sample's source.
 
@@ -123,17 +120,19 @@ class _Cu3sRefDataset(Dataset):
         """
         if not self._refs:
             raise ValueError("dataset is empty; no wavelengths available")
-        return self._reader_for(self._refs[0].source).wavelengths_nm
+        return self._cache.get(self._refs[0].source).wavelengths_nm
 
     @property
     def wavelengths(self) -> np.ndarray:
         """Alias of :attr:`wavelengths_nm` (the accessor the former dataset exposed)."""
         return self.wavelengths_nm
 
-    def __getitem__(self, idx: int) -> dict:
-        ref = self._refs[idx]
-        read_pos = ref.index if ref.index is not None else 0
-        item = self._reader_for(ref.source).read(read_pos)
+    def _decorate(self, ref: SampleRef, read_pos: int, item: dict) -> dict:
+        """Attach the ref's identity, and its COCO labels when it has an annotation.
+
+        Labeling stays on the calling thread: CocoLabeler holds the GIL for its whole
+        duration and keeps mutable index state, so a pool would add risk and no speed.
+        """
         item["stem"] = ref.stem
         # COCO image id (defaults to the read position); kept distinct from read_index.
         image_id = ref.label_id if ref.label_id is not None else read_pos
@@ -142,6 +141,25 @@ class _Cu3sRefDataset(Dataset):
         if ref.annotation:
             item.update(self._labeler_for(ref.annotation).load_for(int(image_id), item))
         return item
+
+    def __getitem__(self, idx: int) -> dict:
+        ref = self._refs[idx]
+        read_pos = ref.index if ref.index is not None else 0
+        return self._decorate(ref, read_pos, self._cache.get(ref.source).read(read_pos))
+
+    def __getitems__(self, indices: list[int]) -> list[dict]:
+        """Fetch a whole batch at once, so the reader cache can overlap its reads.
+
+        torch calls this in place of per-index ``__getitem__`` when a dataset defines it. It is
+        the only point at which several indices are known together, so it is the only place
+        the readers' threads can be used; parallelism is therefore bounded by ``batch_size``.
+        """
+        refs = [self._refs[i] for i in indices]
+        positions = [(ref.source, ref.index if ref.index is not None else 0) for ref in refs]
+        return [
+            self._decorate(ref, position, item)
+            for ref, (_, position), item in zip(refs, positions, self._cache.read_many(positions))
+        ]
 
 
 class Cu3sDataModule(BaseCuvisAIDataModule):
@@ -174,6 +192,14 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         # Reflectance session holds SDK GPU processing pools; keep this small when
         # torch shares the GPU.
         max_open_sessions: int = 4,
+        # SDK reader threads for the whole dataset, divided across the sessions it holds open.
+        # 0 disables. Needs a cuvis binding that releases the GIL; on one that does not, the
+        # reader warns and falls back, because extra threads there are a measured loss.
+        read_threads: int = 0,
+        # Keep each batch inside as few recordings as possible, so a shuffled multi-file
+        # epoch stops evicting readers mid-batch. Changes which samples share a batch, and
+        # replaces the loader's sampler, so it is off by default and unusable under DDP.
+        source_coherent_batches: bool = False,
     ) -> None:
         super().__init__(
             splits=splits,
@@ -205,7 +231,35 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         self.max_open_sessions = int(max_open_sessions)
         if self.max_open_sessions < 1:
             raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
+        self.read_threads = int(read_threads)
+        if self.read_threads < 0:
+            raise ValueError(f"read_threads must be >= 0, got {read_threads}")
+        self.source_coherent_batches = bool(source_coherent_batches)
+        # Process workers each build their own sessions and their own ProcessingContext, so
+        # combining them multiplies both the handle count and the ~9 s context build. The
+        # failure mode is an OOM or a killed CUDA process, not a slowdown, so refuse instead
+        # of silently overriding either knob.
+        if self.read_threads > 1 and int(num_workers) > 0:
+            raise ValueError(
+                f"read_threads={read_threads} cannot be combined with num_workers="
+                f"{num_workers}; reader threads replace DataLoader worker processes, so set "
+                "num_workers=0 to use them."
+            )
         self._enum_labelers: dict[str, Any] = {}
+
+    def _loader(self, dataset, *, shuffle: bool, name: str) -> DataLoader:
+        """The base loader, or one whose batches stay within a recording when asked for."""
+        sources = getattr(getattr(dataset, "_base", dataset), "sample_sources", None)
+        if not self.source_coherent_batches or not sources:
+            return super()._loader(dataset, shuffle=shuffle, name=name)
+        # samples_per_frame wraps the dataset in a repeat whose index i reads base i % len,
+        # so repeating the base's source list reproduces that mapping exactly.
+        sources = list(sources) * max(1, len(dataset) // len(sources))
+        return DataLoader(
+            dataset,
+            num_workers=self.num_workers,
+            batch_sampler=SourceCoherentBatchSampler(sources, self.batch_size, shuffle=shuffle),
+        )
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
@@ -318,11 +372,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
                 if self.frames == "measurements":
                     source = path.resolve().as_posix()
                     annotation = _sibling_json(None, source)
-                    reader = Cu3sCubeReader(source, processing_mode=None)
-                    try:
-                        total = int(reader.total_measurements)
-                    finally:
-                        reader.close()
+                    total = total_measurements_of(source)
                     for m in range(total):
                         tags, cats = self._attrs_for(annotation, m, required_attrs)
                         refs.append(
@@ -381,7 +431,12 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
 
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
         """Build the torch Dataset reading exactly the resolved ``SampleRef`` subset."""
-        return _Cu3sRefDataset(refs, self.processing_mode, max_open_sessions=self.max_open_sessions)
+        return _Cu3sRefDataset(
+            refs,
+            self.processing_mode,
+            max_open_sessions=self.max_open_sessions,
+            read_threads=self.read_threads,
+        )
 
     def category_name_to_id(self) -> dict[str, int] | None:
         """Map COCO category names to ids (from the annotation), or None when unlabeled."""

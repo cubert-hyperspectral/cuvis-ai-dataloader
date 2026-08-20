@@ -53,6 +53,11 @@ class Cu3sCubeReader:
 
         self.session = cuvis.SessionFile(self.cu3s_file_path)
         self.pc = cuvis.ProcessingContext(self.session)
+        # Share our context so the SDK's lazy ``Measurement.cube`` path reuses it. Otherwise reading
+        # mesu0.cube below leaves session._pc unset and the SDK builds a second, never-used
+        # ProcessingContext, wasting a full init and holding duplicate GPU + host buffers for the
+        # reader's lifetime (~130 MB VRAM per reader on a 410x410x164 session).
+        self.session._pc = self.pc
 
         self.fps: float | None = None
         try:
