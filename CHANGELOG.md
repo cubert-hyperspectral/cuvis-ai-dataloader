@@ -3,6 +3,25 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.6.0 - 2026-08-21
+
+- **`CocoLabeler` reads both COCO label dialects.** Track-dialect files (top-level
+  `videos`, one annotation per track with per-frame parallel arrays — the shape the
+  mask-tracking writer historically emitted and CuvisNEXT saves for tracked sessions) are
+  now converted to standard image-keyed COCO in memory before pycocotools indexes them,
+  with object identity preserved as an additive `track_id` per annotation. Previously such
+  files failed at construction with a bare `KeyError: 'image_id'`, so datasets annotated
+  with the tracking tools could not be used for training. Malformed or ambiguous inputs
+  (hybrid `videos`+`images` files, empty or multi-entry `videos`, duplicate
+  `frame_indices`, parallel-array length mismatches, non-RLE segmentation entries) are
+  rejected with a `ValueError` naming the file instead of being silently mis-parsed.
+- **Standard RLE-object `segmentation` rasterizes.** `create_mask`, `load_for`, and
+  `Annotation.to_torchvision` now decode the standard COCO RLE dict form
+  (`{"size": [H, W], "counts": str | list}`) — the form image-dialect mask exports carry —
+  alongside polygons and the legacy non-standard `mask` key. Compressed string counts
+  decode at their declared size and are padded/cropped to the label canvas on mismatch
+  (with a warning); list counts keep the existing canvas-authoritative decode.
+
 ## 0.5.1 - 2026-08-20
 
 - Documented the torch cu128 index tables as local-development-only: installs of this package

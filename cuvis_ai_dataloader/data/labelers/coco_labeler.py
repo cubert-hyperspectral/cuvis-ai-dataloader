@@ -21,7 +21,12 @@ from pycocotools.coco import COCO
 from skimage.draw import polygon2mask
 from torchvision.tv_tensors import BoundingBoxes, Mask
 
-from cuvis_ai_core.data.rle import decode_rle_mask_for_canvas
+from cuvis_ai_core.data.rle import (
+    coco_rle_area,
+    coco_rle_decode,
+    coco_rle_to_bbox,
+    decode_rle_mask_for_canvas,
+)
 
 
 class SafeWizard(JSONWizard):
@@ -54,6 +59,141 @@ class SafeWizard(JSONWizard):
             return True
         except Exception:
             return False
+
+
+def _decode_rle_dict_for_canvas(seg: dict, image_height: int, image_width: int) -> np.ndarray:
+    """Decode a standard COCO RLE ``segmentation`` dict to a boolean mask on the canvas.
+
+    List-based counts decode straight into the canvas dimensions (matching the legacy
+    ``mask``-key behavior); compressed string counts decode at their declared ``size`` and
+    are padded/cropped to the canvas when the two disagree.
+    """
+    counts = seg.get("counts")
+    if isinstance(counts, list):
+        return decode_rle_mask_for_canvas(
+            seg, target_height=image_height, target_width=image_width
+        ).astype(bool, copy=False)
+    decoded = coco_rle_decode(seg).astype(bool, copy=False)
+    if decoded.shape != (image_height, image_width):
+        logger.warning(
+            "COCO RLE size {} mismatches canvas {}; padding/cropping to the canvas.",
+            tuple(decoded.shape),
+            (image_height, image_width),
+        )
+        fitted = np.zeros((image_height, image_width), dtype=bool)
+        h = min(image_height, decoded.shape[0])
+        w = min(image_width, decoded.shape[1])
+        fitted[:h, :w] = decoded[:h, :w]
+        return fitted
+    return decoded
+
+
+def convert_track_dialect_to_image(dataset: dict, source: str = "<memory>") -> dict:
+    """Convert a track-dialect COCO into standard image-keyed COCO, in memory.
+
+    The track dialect (top-level ``videos``, one annotation per track carrying per-frame
+    parallel arrays ``segmentations``/``bboxes``/``areas``/``detection_scores``, no
+    ``image_id``) is what the mask-tracking tools historically wrote. The output is standard
+    COCO — per-frame ``images`` records plus one annotation per (track, frame) — with object
+    identity preserved as an additive ``track_id`` per annotation.
+
+    Malformed or ambiguous inputs are rejected loudly instead of guessed at: hybrid files
+    carrying both ``videos`` and ``images``, empty or multi-entry ``videos``, duplicate
+    ``frame_indices``, parallel arrays whose lengths disagree with ``frame_indices``, and
+    non-RLE segmentation entries all raise ``ValueError`` naming ``source``.
+    """
+    if "images" in dataset:
+        raise ValueError(
+            f"{source}: hybrid COCO carrying both 'videos' and 'images' is ambiguous; "
+            "re-export the file in a single dialect."
+        )
+    videos = dataset.get("videos")
+    if not isinstance(videos, list) or not videos:
+        raise ValueError(f"{source}: track-dialect COCO has an empty or invalid 'videos' list.")
+    if len(videos) != 1:
+        raise ValueError(
+            f"{source}: track-dialect COCO with {len(videos)} videos is unsupported "
+            "(expected exactly one)."
+        )
+    video = videos[0]
+    frame_indices = video.get("frame_indices")
+    if not isinstance(frame_indices, list) or not frame_indices:
+        raise ValueError(f"{source}: track-dialect video record has no 'frame_indices'.")
+    frame_ids = [int(fid) for fid in frame_indices]
+    if len(set(frame_ids)) != len(frame_ids):
+        raise ValueError(f"{source}: track-dialect 'frame_indices' contains duplicates.")
+    try:
+        height, width = int(video["height"]), int(video["width"])
+    except (KeyError, TypeError, ValueError) as err:
+        raise ValueError(
+            f"{source}: track-dialect video record lacks integer height/width."
+        ) from err
+    if height <= 0 or width <= 0:
+        raise ValueError(f"{source}: track-dialect video record has non-positive dimensions.")
+
+    n_frames = len(frame_ids)
+    images = [
+        {"id": fid, "file_name": f"frame_{fid:06d}", "height": height, "width": width}
+        for fid in frame_ids
+    ]
+    annotations: list[dict[str, Any]] = []
+    next_id = 1
+    for ann in dataset.get("annotations", []):
+        segmentations = ann.get("segmentations")
+        if not isinstance(segmentations, list) or len(segmentations) != n_frames:
+            found = len(segmentations) if isinstance(segmentations, list) else "no"
+            raise ValueError(
+                f"{source}: track annotation {ann.get('id')} carries {found} "
+                f"'segmentations' entries for {n_frames} frames."
+            )
+        per_frame: dict[str, list] = {}
+        for key in ("bboxes", "areas", "detection_scores"):
+            values = ann.get(key)
+            if values is None:
+                continue
+            if not isinstance(values, list) or len(values) != n_frames:
+                found = len(values) if isinstance(values, list) else "an invalid"
+                raise ValueError(
+                    f"{source}: track annotation {ann.get('id')} carries {found} "
+                    f"'{key}' entries for {n_frames} frames."
+                )
+            per_frame[key] = values
+        track_id = int(ann.get("track_id", ann.get("id", -1)))
+        category_id = int(ann.get("category_id", 1))
+        for i, fid in enumerate(frame_ids):
+            seg = segmentations[i]
+            if seg is None:
+                continue
+            if not isinstance(seg, dict) or "counts" not in seg:
+                raise ValueError(
+                    f"{source}: track annotation {ann.get('id')} frame {fid} has a "
+                    "non-RLE segmentation entry (expected an RLE object or null)."
+                )
+            bbox = per_frame.get("bboxes", [None] * n_frames)[i]
+            area = per_frame.get("areas", [None] * n_frames)[i]
+            score = per_frame.get("detection_scores", [None] * n_frames)[i]
+            converted: dict[str, Any] = {
+                "id": next_id,
+                "image_id": fid,
+                "category_id": category_id,
+                "segmentation": seg,
+                "bbox": [float(v) for v in bbox] if bbox is not None else coco_rle_to_bbox(seg),
+                "area": float(area) if area is not None else float(coco_rle_area(seg)),
+                "iscrowd": 1,
+                "track_id": track_id,
+            }
+            if score is not None:
+                converted["score"] = float(score)
+            annotations.append(converted)
+            next_id += 1
+
+    return {
+        "info": dataset.get("info", {}),
+        "licenses": dataset.get("licenses", []),
+        "images": images,
+        "annotations": annotations,
+        "categories": dataset.get("categories", []),
+    }
 
 
 @dataclass
@@ -102,12 +242,17 @@ class Image(JSONWizard):
 
 @dataclass
 class Annotation(SafeWizard):
-    """COCO ``annotation``: bbox / polygon / RLE mask for one image and category."""
+    """COCO ``annotation``: bbox / polygon / RLE mask for one image and category.
+
+    ``segmentation`` accepts the standard COCO forms: polygon list-of-lists or an RLE
+    object (``{"size": [H, W], "counts": str | list}``). The legacy non-standard ``mask``
+    key (list-counts RLE) is kept for older exports.
+    """
 
     id: int
     image_id: int
     category_id: int
-    segmentation: list | None = None
+    segmentation: list | dict | None = None
     area: float | None = None
     bbox: list[float] | None = None
     mask: dict | None = None
@@ -133,6 +278,11 @@ class Annotation(SafeWizard):
         ):
             coords = np.array(self.segmentation[0]).reshape(-1, 2)
             mask_np = polygon2mask(size, coords).astype(np.uint8)
+            out.segmentation = Mask(torch.from_numpy(mask_np))
+        elif isinstance(self.segmentation, dict) and self.segmentation.get("counts") is not None:
+            mask_np = _decode_rle_dict_for_canvas(
+                self.segmentation, canvas_height, canvas_width
+            ).astype(np.uint8)
             out.segmentation = Mask(torch.from_numpy(mask_np))
 
         if self.mask is not None:
@@ -186,9 +336,24 @@ class COCOData:
 
     @classmethod
     def from_path(cls, path: Path | str):
-        """Load a COCO JSON from ``path`` (suppressing pycocotools' stdout noise)."""
+        """Load a COCO JSON from ``path`` (suppressing pycocotools' stdout noise).
+
+        Both label dialects are accepted: standard image-keyed COCO loads as-is, and a
+        track-dialect file (top-level ``videos``, per-track parallel arrays) is converted
+        to the image dialect in memory via :func:`convert_track_dialect_to_image` before
+        pycocotools indexes it.
+        """
+        with open(path, encoding="utf-8") as f:
+            dataset = json.load(f)
+        if not isinstance(dataset, dict):
+            raise ValueError(f"{path}: COCO file does not contain a JSON object.")
+        if "videos" in dataset:
+            dataset = convert_track_dialect_to_image(dataset, source=str(path))
+        coco = COCO()
+        coco.dataset = dataset
         with contextlib.redirect_stdout(io.StringIO()):
-            return cls(COCO(path))
+            coco.createIndex()
+        return cls(coco)
 
     @property
     def image_ids(self) -> list[int]:
@@ -279,9 +444,10 @@ def create_mask(
 ) -> np.ndarray:
     """Rasterize COCO annotations into a per-pixel category-id mask.
 
-    Polygons are filled via ``skimage.draw.polygon2mask``; RLE masks are decoded
-    via core's ``decode_rle_mask_for_canvas``. Returns an ``int32`` ``[H, W]``
-    array of category ids (0 = background).
+    Polygons are filled via ``skimage.draw.polygon2mask``; standard RLE-object
+    ``segmentation`` dicts (str or list counts) are decoded via core's RLE helpers, as is
+    the legacy non-standard ``mask`` key. Returns an ``int32`` ``[H, W]`` array of
+    category ids (0 = background).
     """
     category_mask = np.zeros((image_height, image_width), dtype=np.int32)
     for ann in annotations:
@@ -291,7 +457,14 @@ def create_mask(
         if not segs and not mask:
             continue
 
-        if isinstance(segs, list) and len(segs) > 0 and isinstance(segs[0], (list, tuple)):
+        if isinstance(segs, dict) and segs.get("counts") is not None:
+            decoded = _decode_rle_dict_for_canvas(segs, image_height, image_width)
+            if overlap_strategy == "overwrite":
+                write_mask = decoded
+            else:
+                write_mask = decoded & (category_mask == 0)
+            category_mask[write_mask] = cat_id
+        elif isinstance(segs, list) and len(segs) > 0 and isinstance(segs[0], (list, tuple)):
             for seg in segs:
                 if len(seg) < 6:
                     continue
