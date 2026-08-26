@@ -650,3 +650,58 @@ class TestRleDictSegmentation:
         ann = Annotation(id=1, image_id=0, category_id=3, segmentation=seg)
         result = ann.to_torchvision(size=(self.HEIGHT, self.WIDTH))
         assert int(result["segmentation"].sum()) == 12
+
+
+class TestSegmentationPayloadIntegrity:
+    """``Annotation.from_dict`` must carry the ``segmentation`` payload verbatim.
+
+    dataclass-wizard >= 1.0 resolves the ``list | dict | None`` union list-first and
+    coerces an RLE dict into the list of its keys, after which every RLE-object
+    annotation rasterizes to 0 px (silent ground-truth loss; found on cuvis-next
+    image-mode exports, 2026-08-26). These tests pin the verbatim behavior on every
+    wizard version, and that an unrecognized payload fails loudly instead of silently.
+    """
+
+    HEIGHT, WIDTH = 10, 12
+
+    def _raw_ann(self, segmentation):
+        return {
+            "id": 8,
+            "image_id": 0,
+            "category_id": 3,
+            "area": 12.0,
+            "iscrowd": 1,
+            "segmentation": segmentation,
+        }
+
+    def test_from_dict_preserves_rle_dict_segmentation(self):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg = coco_rle_encode(_rect_mask(self.HEIGHT, self.WIDTH, 2, 5, 3, 7))
+        assert isinstance(seg["counts"], str)
+        ann = Annotation.from_dict(self._raw_ann(seg))
+        assert isinstance(ann.segmentation, dict)
+        assert ann.segmentation["counts"] == seg["counts"]
+        assert ann.segmentation["size"] == [self.HEIGHT, self.WIDTH]
+
+    def test_from_dict_rle_dict_rasterizes(self):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+        seg = coco_rle_encode(_rect_mask(self.HEIGHT, self.WIDTH, 2, 5, 3, 7))
+        ann = Annotation.from_dict(self._raw_ann(seg))
+        mask = create_mask([ann], self.HEIGHT, self.WIDTH)
+        assert int((mask == 3).sum()) == 12
+        assert (mask[2:5, 3:7] == 3).all()
+
+    def test_from_dict_preserves_polygon_segmentation(self):
+        poly = [[3.0, 2.0, 7.0, 2.0, 7.0, 5.0, 3.0, 5.0]]
+        ann = Annotation.from_dict(self._raw_ann(poly))
+        assert ann.segmentation == poly
+
+    def test_create_mask_raises_on_unrecognized_segmentation(self):
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+        mangled = Annotation(id=8, image_id=0, category_id=3, segmentation=["counts", "size"])
+        with pytest.raises(ValueError, match="unsupported 'segmentation' payload"):
+            create_mask([mangled], self.HEIGHT, self.WIDTH)

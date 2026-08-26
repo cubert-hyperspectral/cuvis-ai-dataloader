@@ -259,6 +259,21 @@ class Annotation(SafeWizard):
     iscrowd: int | None = 0
     auxiliary: dict[str, Any] | None = field(default_factory=dict)
 
+    @classmethod
+    def from_dict(cls, o: dict) -> "Annotation":
+        """Parse via the wizard, but carry the ``segmentation`` payload verbatim.
+
+        ``segmentation`` is free-form COCO data (polygon list-of-lists OR an RLE object);
+        typed parsing adds nothing and is where it breaks: dataclass-wizard >= 1.0 resolves
+        the ``list | dict | None`` union list-first, silently coercing an RLE dict into the
+        list of its keys (``['counts', 'size']``) — downstream every RLE-object annotation
+        rasterizes to 0 px (ground-truth loss). Bypassing the union keeps the payload intact
+        on every wizard version.
+        """
+        ann = super().from_dict({k: v for k, v in o.items() if k != "segmentation"})
+        ann.segmentation = o.get("segmentation")
+        return ann
+
     def to_torchvision(self, size: tuple[int, int]) -> dict[str, Any]:
         """Convert COCO-style bbox/segmentation/mask into torchvision tensors."""
         out = copy(self)
@@ -476,6 +491,15 @@ def create_mask(
                 else:
                     write_idx = poly_mask & (category_mask == 0)
                     category_mask[write_idx] = cat_id
+        elif segs:
+            # A present-but-unrecognized payload is corruption (e.g. an RLE dict mangled
+            # into its key list by a union-coercing parser). Silently skipping it drops
+            # ground truth without a trace — refuse loudly instead.
+            raise ValueError(
+                f"annotation {ann.id}: unsupported 'segmentation' payload of type "
+                f"{type(segs).__name__} ({str(segs)[:60]!r}); expected a polygon "
+                "list-of-lists or an RLE object with 'counts'."
+            )
         counts = mask.get("counts") if isinstance(mask, dict) else None
         if counts is not None and len(counts) > 0:
             decoded = decode_rle_mask_for_canvas(
