@@ -247,12 +247,19 @@ class Annotation(SafeWizard):
     ``segmentation`` accepts the standard COCO forms: polygon list-of-lists or an RLE
     object (``{"size": [H, W], "counts": str | list}``). The legacy non-standard ``mask``
     key (list-counts RLE) is kept for older exports.
+
+    ``segmentation`` is typed ``Any`` on purpose: it is free-form COCO data that the wizard
+    must carry verbatim. A ``list | dict | None`` union is resolved list-first by the v1
+    loader (the default since dataclass-wizard 1.0), which turns an RLE object into the list
+    of its keys and makes every RLE annotation rasterize to 0 px. ``Any`` passes the payload
+    through untouched on every wizard version and every entry point (``from_dict``,
+    ``from_list``, ``from_json``).
     """
 
     id: int
     image_id: int
     category_id: int
-    segmentation: list | dict | None = None
+    segmentation: Any = None
     area: float | None = None
     bbox: list[float] | None = None
     mask: dict | None = None
@@ -476,6 +483,15 @@ def create_mask(
                 else:
                     write_idx = poly_mask & (category_mask == 0)
                     category_mask[write_idx] = cat_id
+        elif segs:
+            # A present-but-unrecognized payload is corruption (e.g. an RLE dict mangled
+            # into its key list by a union-coercing parser). Silently skipping it drops
+            # ground truth without a trace — refuse loudly instead.
+            raise ValueError(
+                f"annotation {ann.id}: unsupported 'segmentation' payload of type "
+                f"{type(segs).__name__} ({str(segs)[:60]!r}); expected a polygon "
+                "list-of-lists or an RLE object with 'counts'."
+            )
         counts = mask.get("counts") if isinstance(mask, dict) else None
         if counts is not None and len(counts) > 0:
             decoded = decode_rle_mask_for_canvas(

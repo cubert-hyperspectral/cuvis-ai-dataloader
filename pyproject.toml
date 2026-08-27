@@ -64,7 +64,7 @@ cu3s-to-npz = "cuvis_ai_dataloader.scripts.convert_cu3s_to_npz:cu3s_to_npz_cli"
 # Per-format heavy deps. The orchestrator composer installs the union of extras
 # a run actually activates, so a tiff_paired child env never pulls `cuvis`.
 cu3s = ["cuvis>=3.5.0", "cuvis-il<3.5.4; sys_platform == 'win32'"]
-coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1"]
+coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1,<1.0"]
 tiff = ["tifffile>=2024.5.0"]
 all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
 dev = [

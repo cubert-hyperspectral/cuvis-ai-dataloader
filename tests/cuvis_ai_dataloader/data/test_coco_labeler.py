@@ -650,3 +650,91 @@ class TestRleDictSegmentation:
         ann = Annotation(id=1, image_id=0, category_id=3, segmentation=seg)
         result = ann.to_torchvision(size=(self.HEIGHT, self.WIDTH))
         assert int(result["segmentation"].sum()) == 12
+
+
+class TestSegmentationPayloadIntegrity:
+    """``Annotation`` must carry the ``segmentation`` payload verbatim on every wizard version.
+
+    The v1 loader (opt-in in dataclass-wizard 0.39.x, the default since 1.0) resolves a
+    ``list | dict | None`` union list-first and coerces an RLE dict into the list of its
+    keys, after which every RLE-object annotation rasterizes to 0 px (silent ground-truth
+    loss on CuvisNEXT image-mode exports). The field is therefore typed ``Any``. These tests
+    pin the passthrough by identity (the v0 union parser returned a copy, so a regression to
+    typed parsing fails here even under the 0.39.x lock), exercise the v1 loader explicitly,
+    and check that an unrecognized payload fails loudly instead of silently.
+    """
+
+    HEIGHT, WIDTH = 10, 12
+
+    def _raw_ann(self, segmentation):
+        return {
+            "id": 8,
+            "image_id": 0,
+            "category_id": 3,
+            "area": 12.0,
+            "iscrowd": 1,
+            "segmentation": segmentation,
+        }
+
+    def _rle(self):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg = coco_rle_encode(_rect_mask(self.HEIGHT, self.WIDTH, 2, 5, 3, 7))
+        assert isinstance(seg["counts"], str)
+        return seg
+
+    def test_from_dict_passes_rle_dict_through_by_identity(self):
+        seg = self._rle()
+        ann = Annotation.from_dict(self._raw_ann(seg))
+        assert ann.segmentation is seg
+
+    def test_from_list_passes_rle_dict_through_by_identity(self):
+        seg = self._rle()
+        (ann,) = Annotation.from_list([self._raw_ann(seg)])
+        assert ann.segmentation is seg
+
+    def test_from_dict_passes_polygon_through_by_identity(self):
+        poly = [[3.0, 2.0, 7.0, 2.0, 7.0, 5.0, 3.0, 5.0]]
+        ann = Annotation.from_dict(self._raw_ann(poly))
+        assert ann.segmentation is poly
+
+    def test_v1_loader_preserves_rle_dict(self):
+        """Opt a subclass into the v1 loader (the 1.x default) and check the RLE object survives.
+
+        ``fromdict`` / ``fromlist`` are called directly instead of the inherited classmethods:
+        once the base ``Annotation.from_dict`` has run, dataclass-wizard rebinds it to the
+        generated v0 loader and a subclass defined afterwards inherits that binding, so the
+        classmethod would exercise the wrong loader. The type checks guard that the subclass's
+        own (v1) loader ran.
+        """
+        from dataclasses import dataclass
+
+        from dataclass_wizard import JSONWizard, fromdict, fromlist
+
+        @dataclass
+        class V1Annotation(Annotation):
+            class _(JSONWizard.Meta):
+                v1 = True
+
+        seg = self._rle()
+        ann = fromdict(V1Annotation, self._raw_ann(seg))
+        assert type(ann) is V1Annotation
+        assert ann.segmentation is seg
+        (listed,) = fromlist(V1Annotation, [self._raw_ann(seg)])
+        assert type(listed) is V1Annotation
+        assert listed.segmentation is seg
+
+    def test_from_dict_rle_dict_rasterizes(self):
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+        ann = Annotation.from_dict(self._raw_ann(self._rle()))
+        mask = create_mask([ann], self.HEIGHT, self.WIDTH)
+        assert int((mask == 3).sum()) == 12
+        assert (mask[2:5, 3:7] == 3).all()
+
+    def test_create_mask_raises_on_unrecognized_segmentation(self):
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+        mangled = Annotation(id=8, image_id=0, category_id=3, segmentation=["counts", "size"])
+        with pytest.raises(ValueError, match="unsupported 'segmentation' payload"):
+            create_mask([mangled], self.HEIGHT, self.WIDTH)
