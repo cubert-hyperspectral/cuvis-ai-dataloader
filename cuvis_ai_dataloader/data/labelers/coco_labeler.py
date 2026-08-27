@@ -247,32 +247,24 @@ class Annotation(SafeWizard):
     ``segmentation`` accepts the standard COCO forms: polygon list-of-lists or an RLE
     object (``{"size": [H, W], "counts": str | list}``). The legacy non-standard ``mask``
     key (list-counts RLE) is kept for older exports.
+
+    ``segmentation`` is typed ``Any`` on purpose: it is free-form COCO data that the wizard
+    must carry verbatim. A ``list | dict | None`` union is resolved list-first by the v1
+    loader (the default since dataclass-wizard 1.0), which turns an RLE object into the list
+    of its keys and makes every RLE annotation rasterize to 0 px. ``Any`` passes the payload
+    through untouched on every wizard version and every entry point (``from_dict``,
+    ``from_list``, ``from_json``).
     """
 
     id: int
     image_id: int
     category_id: int
-    segmentation: list | dict | None = None
+    segmentation: Any = None
     area: float | None = None
     bbox: list[float] | None = None
     mask: dict | None = None
     iscrowd: int | None = 0
     auxiliary: dict[str, Any] | None = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, o: dict) -> "Annotation":
-        """Parse via the wizard, but carry the ``segmentation`` payload verbatim.
-
-        ``segmentation`` is free-form COCO data (polygon list-of-lists OR an RLE object);
-        typed parsing adds nothing and is where it breaks: dataclass-wizard >= 1.0 resolves
-        the ``list | dict | None`` union list-first, silently coercing an RLE dict into the
-        list of its keys (``['counts', 'size']``) — downstream every RLE-object annotation
-        rasterizes to 0 px (ground-truth loss). Bypassing the union keeps the payload intact
-        on every wizard version.
-        """
-        ann = super().from_dict({k: v for k, v in o.items() if k != "segmentation"})
-        ann.segmentation = o.get("segmentation")
-        return ann
 
     def to_torchvision(self, size: tuple[int, int]) -> dict[str, Any]:
         """Convert COCO-style bbox/segmentation/mask into torchvision tensors."""

@@ -3,6 +3,15 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## Unreleased
+
+- Fix RLE-object `segmentation` payloads silently rasterizing to 0 px under dataclass-wizard
+  1.x: `Annotation.segmentation` is typed `Any` so polygon lists and RLE dicts pass through
+  verbatim on every wizard version and entry point.
+- `create_mask` raises `ValueError` on a present but unrecognized `segmentation` payload (flat
+  polygon lists, RLE dicts without `counts`) instead of skipping it silently.
+- Cap `dataclass-wizard<1.0` in the `coco` extra until the 1.x dump path is validated.
+
 ## 0.6.0 - 2026-08-21
 
 - **`CocoLabeler` reads both COCO label dialects.** Track-dialect files (top-level
