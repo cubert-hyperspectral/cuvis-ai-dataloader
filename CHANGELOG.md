@@ -3,7 +3,7 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## Unreleased
+## 0.6.1 - 2026-08-27
 
 - Fix RLE-object `segmentation` payloads silently rasterizing to 0 px under dataclass-wizard
   1.x: `Annotation.segmentation` is typed `Any` so polygon lists and RLE dicts pass through
