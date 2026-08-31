@@ -27,8 +27,8 @@ dependencies = [
     "cuvis-ai-schemas>=0.8.0",
     "numpy",
     "torch",
-    # Declared directly so the pytorch-cu128 source pin applies (uv only honors
-    # tool.uv.sources for direct dependencies; torchvision is otherwise transitive).
+    # Imported directly; also listed in the `cuda` dependency group below so the
+    # group-scoped cu128 pin can bind it for local GPU development.
     "torchvision",
     "pytorch-lightning",
     "pillow>=12.2.0",
@@ -86,13 +86,23 @@ include = ["cuvis_ai_dataloader*"]
 
 [tool.setuptools_scm]
 
-# Local development only: pins this repo's own venv (where this pyproject is the
-# resolution root) to CUDA torch. Installs of this package as a git or registry
-# dependency never read these tables; the orchestrator (cuvis-ai-core >= 0.12.1)
-# mirrors the host's installed torch build into each composed child env instead.
+[tool.uv]
+default-groups = ["cuda"]
+
+[dependency-groups]
+# Floors live in [project].dependencies; this group only carries the cu128 index pin.
+cuda = ["torch", "torchvision"]
+
+# The cu128 pin is scoped to the `cuda` dependency group (installed by default here)
+# because uv also reads a git or path dependency's `[tool.uv.sources]`: an unscoped
+# `torch = { index = ... }` reaches every composed child environment that pulls this
+# repo from git and collides with the host-mirrored torch index there (cu130 on a
+# Jetson Thor host, cpu on a CPU-only host). Consumers never install a dependency's
+# groups, so the scoped pin binds nothing outside this checkout. On an aarch64
+# checkout, sync without the pin: `uv sync --no-default-groups`.
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu128", group = "cuda" }
+torchvision = { index = "pytorch-cu128", group = "cuda" }
 # Local development alternative (uncomment to use a local checkout instead)
 # cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
 

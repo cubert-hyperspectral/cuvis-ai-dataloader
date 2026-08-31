@@ -490,6 +490,12 @@ tiff = [
     { name = "tifffile" },
 ]
 
+[package.dev-dependencies]
+cuda = [
+    { name = "torch" },
+    { name = "torchvision" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "bandit", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=1.7.0" },
@@ -515,11 +521,17 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14.13" },
     { name = "scikit-image", marker = "extra == 'coco'", specifier = ">=0.26.0" },
     { name = "tifffile", marker = "extra == 'tiff'", specifier = ">=2024.5.0" },
-    { name = "torch", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch" },
+    { name = "torchvision" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=6.2.0" },
 ]
 provides-extras = ["cu3s", "coco", "tiff", "all", "dev"]
+
+[package.metadata.requires-dev]
+cuda = [
+    { name = "torch", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "cuvis-ai-dataloader", group = "cuda" } },
+    { name = "torchvision", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "cuvis-ai-dataloader", group = "cuda" } },
+]
 
 [[package]]
 name = "cuvis-ai-schemas"

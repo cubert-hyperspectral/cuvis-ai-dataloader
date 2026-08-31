@@ -3,6 +3,16 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.6.2 - 2026-08-31
+
+- Scoped the torch/torchvision cu128 index pin to a `cuda` dependency group (installed by
+  default in this checkout): uv reads a git dependency's `[tool.uv.sources]`, so the previous
+  unscoped pin leaked into every composed child environment pulling this plugin from git and
+  collided with the host-mirrored torch index there (cu130 on a Jetson Thor host). Consumers
+  never install a dependency's groups, so the scoped pin binds nothing outside this checkout;
+  the committed lock now resolves torch from the cu128 index. On an aarch64 checkout, sync
+  without the pin: `uv sync --no-default-groups`.
+
 ## 0.6.1 - 2026-08-27
 
 - Fix RLE-object `segmentation` payloads silently rasterizing to 0 px under dataclass-wizard
