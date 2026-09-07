@@ -337,3 +337,217 @@ def test_samples_per_frame_validation(tmp_path):
         MultiNpzDataModule(
             splits=_split_cfg(train=[0]), universe_csv=str(universe), samples_per_frame=0
         )
+
+
+# --------------------------------------------------------------------------- crop-in-dataset
+def _write_gradient_npz(path: Path, h: int = 8, w: int = 10, c: int = 5) -> None:
+    """Write a frame whose cube encodes position (``cube[y, x, :] == y*100 + x``) + empty mask.
+
+    A position-encoding cube lets a test tell crops apart by their top-left value, since the
+    default fixture cube is all zeros (indistinguishable across offsets).
+    """
+    cube = np.tile(
+        (np.arange(h)[:, None] * 100 + np.arange(w)[None, :]).astype(np.float32)[..., None],
+        (1, 1, c),
+    )
+    np.savez(
+        path,
+        cube=cube,
+        wavelengths=np.linspace(450, 850, c).astype(np.float32),
+        mask=np.zeros((h, w), dtype=np.int32),
+    )
+
+
+def test_fg_crop_window_centers_on_fg_and_rejects_oversize():
+    from cuvis_ai_dataloader.data._crop import fg_crop_window
+
+    rng = np.random.default_rng(0)
+    mask = np.zeros((8, 10), dtype=np.int32)
+    mask[2:5, 3:7] = 1
+    # The chosen fg pixel sits at the window center (out_h//2, out_w//2), not clamped inward.
+    for _ in range(20):
+        top, left = fg_crop_window(mask, (4, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+        cy, cx = top + 4 // 2, left + 6 // 2
+        assert mask[cy, cx] > 0  # the window is centered on a foreground pixel
+    with pytest.raises(ValueError, match="exceeds"):
+        fg_crop_window(mask, (9, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+
+
+def test_fg_crop_window_near_border_is_not_clamped():
+    from cuvis_ai_dataloader.data._crop import fg_crop_window
+
+    rng = np.random.default_rng(0)
+    mask = np.zeros((8, 10), dtype=np.int32)
+    mask[0, 0] = 1  # a single fg pixel in the top-left corner
+    top, left = fg_crop_window(mask, (4, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+    assert (top, left) == (
+        -2,
+        -3,
+    )  # centered on (0, 0): 0 - 4//2, 0 - 6//2 (window pokes off-frame)
+
+
+def test_crop_with_pad_constant_and_reflect():
+    from cuvis_ai_dataloader.data._crop import crop_with_pad
+
+    arr = (np.arange(8 * 10).reshape(8, 10, 1)).astype(np.float32)  # [H, W, 1]
+    # Window centered on the top-left corner pokes 2 rows / 3 cols off the top-left edge.
+    const = crop_with_pad(arr, -2, -3, (4, 6), "constant")
+    assert const.shape == (4, 6, 1)
+    assert (const[:2, :] == 0).all() and (const[:, :3] == 0).all()  # padded region is 0
+    assert const[2, 3, 0] == arr[0, 0, 0]  # in-frame origin lands at the pad boundary
+    refl = crop_with_pad(arr, -2, -3, (4, 6), "reflect")
+    assert refl.shape == (4, 6, 1)
+    assert (refl >= 0).all()  # reflect mirrors real values, never introduces zeros/negatives here
+    # A fully in-frame window is returned verbatim (no padding).
+    inside = crop_with_pad(arr, 1, 2, (4, 6), "constant")
+    assert np.array_equal(inside, arr[1:5, 2:8])
+
+
+def test_crop_default_off_ships_full_frame(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0, 1]), universe_csv=str(universe), batch_size=1, num_workers=0
+    )
+    dm.setup(stage="fit")
+    batch = next(iter(dm.train_dataloader()))
+    assert batch["cube"].shape == (1, 8, 10, 5)  # whole frame, unchanged
+
+
+def test_crop_train_ships_patch(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0, 1]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    batch = next(iter(dm.train_dataloader()))
+    assert batch["cube"].shape == (1, 4, 6, 5)
+    assert batch["mask"].shape == (1, 4, 6)
+    assert batch["class_mask"].shape == (1, 4, 6)
+
+
+def test_crop_not_applied_to_val_and_test(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0], val=[1], test=[2]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    dm.setup(stage="test")
+    assert next(iter(dm.train_dataloader()))["cube"].shape == (1, 4, 6, 5)  # cropped
+    assert next(iter(dm.val_dataloader()))["cube"].shape == (1, 8, 10, 5)  # full frame
+    assert next(iter(dm.test_dataloader()))["cube"].shape == (1, 8, 10, 5)  # full frame
+
+
+def test_crop_with_samples_per_frame_yields_independent_patches(tmp_path):
+    _write_gradient_npz(tmp_path / "f0.npz")
+    universe = tmp_path / "universe.csv"
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\n")
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        crop_fg_percent=0.0,  # uniform offsets so patches vary by position
+        samples_per_frame=8,
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    assert len(dm.train_ds) == 1  # property stays the unwrapped frame count
+    rep = dm.train_dataloader().dataset
+    assert len(rep) == 8  # 1 frame x 8 samples
+    # cube[0,0,0] == top*100 + left, so distinct top-left values prove independent crop offsets.
+    offsets = {int(rep[i]["cube"][0, 0, 0]) for i in range(len(rep))}
+    assert len(offsets) > 1
+
+
+def test_crop_foreground_biased_hits_object(tmp_path):
+    _write_npz(tmp_path / "f0.npz", with_mask=True)  # mask block [2:5, 3:7] = 2
+    universe = tmp_path / "universe.csv"
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\n")
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        crop_fg_percent=1.0,  # every crop centers on the object
+        samples_per_frame=5,
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    rep = dm.train_dataloader().dataset
+    assert all(int(rep[i]["mask"].max()) > 0 for i in range(len(rep)))  # crop always contains fg
+
+
+def test_crop_via_params_dict(tmp_path):
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0, 1]),
+        params={"universe_csv": str(universe), "crop_size": (4, 6)},
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    assert next(iter(dm.train_dataloader()))["cube"].shape == (1, 4, 6, 5)
+
+
+def test_crop_size_validation(tmp_path):
+    universe = _write_universe(tmp_path)
+    with pytest.raises(ValueError, match="crop_size"):
+        MultiNpzDataModule(
+            splits=_split_cfg(train=[0]), universe_csv=str(universe), crop_size=(0, 6)
+        )
+
+
+def test_crop_fg_percent_validation(tmp_path):
+    universe = _write_universe(tmp_path)
+    with pytest.raises(ValueError, match="crop_fg_percent"):
+        MultiNpzDataModule(
+            splits=_split_cfg(train=[0]), universe_csv=str(universe), crop_fg_percent=1.5
+        )
+
+
+def test_crop_pad_mode_validation(tmp_path):
+    universe = _write_universe(tmp_path)
+    with pytest.raises(ValueError, match="crop_pad_mode"):
+        MultiNpzDataModule(
+            splits=_split_cfg(train=[0]), universe_csv=str(universe), crop_pad_mode="edge"
+        )
+
+
+def test_crop_constant_pad_zeros_border_fg(tmp_path):
+    """A foreground pixel in the corner centers the window off-frame; constant pad fills 0."""
+    h, w, c = 8, 10, 5
+    cube = np.ones((h, w, c), dtype=np.float32)  # all-ones so padded zeros are distinguishable
+    mask = np.zeros((h, w), dtype=np.int32)
+    mask[0, 0] = 1  # single corner foreground pixel
+    np.savez(
+        tmp_path / "f0.npz",
+        cube=cube,
+        wavelengths=np.linspace(450, 850, c).astype(np.float32),
+        mask=mask,
+    )
+    universe = tmp_path / "universe.csv"
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\n")
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        crop_fg_percent=1.0,  # always center on the corner fg pixel
+        crop_pad_mode="constant",
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    sample = dm.train_dataloader().dataset[0]
+    assert sample["cube"].shape == (4, 6, c)
+    # Centered on (0, 0): the top 2 rows and left 3 cols fall off-frame and are padded with 0.
+    assert (sample["cube"][:2, :, :] == 0).all()
+    assert (sample["cube"][:, :3, :] == 0).all()
+    assert sample["cube"][2, 3, 0] == 1.0  # the in-frame corner is real cube data
+    assert int(sample["mask"][2, 3]) == 1  # fg pixel landed at the window center

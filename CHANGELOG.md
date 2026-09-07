@@ -3,6 +3,10 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## [Unreleased]
+
+- Added an optional foreground-biased **crop inside the dataset** to `MultiNpzDataModule`: set `crop_size=(h, w)` to crop each **train** sample to a patch in `__getitem__` (nnU-Net-style foreground oversampling, tuned by `crop_fg_percent` / `crop_fg_labels`), so workers ship ~patch-sized samples instead of whole frames — a large I/O win when the model trains on crops. Composes with `samples_per_frame=N` to yield N independent patches per frame. A foreground-centered window may sit against a border; `crop_pad_mode` fills the out-of-frame region (`"constant"` = 0, the default, or `"reflect"`). The cube is cropped in its stored dtype and only the patch is cast to float32, skipping the whole-frame f32 expansion. Off by default (whole frames, byte-for-byte unchanged); val/test/predict always see whole frames for tiled inference.
+
 ## 0.6.2 - 2026-08-31
 
 - Scoped the torch/torchvision cu128 index pin to a `cuda` dependency group (installed by
@@ -97,6 +101,7 @@ uses semantic versioning.
   universe. Breaking for pipelines that trained a cu3s source without splits — add a `splits`
   block (e.g. a frozen `splits.json` via `splits_path`).
 - **Unified `cu3s_multi` + `npz_multi` onto one `universe.csv` vocabulary via a shared parser (`data/_universe.py`).** Both modules now read `source, index` (required) plus optional `materialized_path, split, annotation, format, group`. `cu3s_multi`'s `splits_csv` argument is renamed `universe_csv` and its old columns (`split, cu3s_path, annotation_json, image_id`) are gone; `npz_multi`'s `path` column is renamed `materialized_path`. `materialized_path` defaults to `source` for cu3s (a raw `.cu3s` is its own file) and is required for npz (the physical file is the derived `.npz`). An inline `split` column is honored only by `cu3s_multi` (present → module-owned, absent → a training stage needs a splits.json; a splits.json always wins), and rejected by `npz_multi`. `source` is posix-normalized in both modules, fixing a cross-module `(source, index)` selector-key mismatch on Windows so one splits.json resolves against both the raw cu3s data and the converted npz. `cu3s_multi` no longer decouples a scalar `image_id` from the read index (`index` is now both). Regenerate every `universe.csv` / split CSV to the new columns; the converter, `cu3s-to-npz`, and `resolve-splits --from-csv` emit/consume them.
+>>>>>>> origin/main
 
 ## 0.4.0 - 2026-07-15
 
