@@ -26,6 +26,23 @@ def test_unknown_kwarg_raises():
         TiffPairedDataModule(images_dir="imgs", bogus=1)
 
 
+def test_nested_cfg_data_construction(tiff_dataset_dir):
+    # `TiffPairedDataModule(**cfg.data)` with the nested DataConfig shape (data_module +
+    # params) must work; `data_module` is dropped and params spliced onto the flat signature.
+    images_dir, labels_dir, wavelengths = tiff_dataset_dir
+    dm = TiffPairedDataModule(
+        data_module="tiff_paired",
+        batch_size=1,
+        params={
+            "images_dir": str(images_dir),
+            "labels_dir": str(labels_dir),
+            "wavelengths": ",".join(str(w) for w in wavelengths),
+        },
+    )
+    dm.setup(stage="predict")
+    assert len(dm._predict_ds) == 2
+
+
 def test_parse_wavelengths_from_gdal():
     xml = '<GDALMetadata><Item name="wavelength">{400,410.5,420}</Item></GDALMetadata>'
     wl = _parse_wavelengths_from_gdal(xml)

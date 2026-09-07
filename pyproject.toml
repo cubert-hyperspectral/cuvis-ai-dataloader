@@ -27,8 +27,8 @@ dependencies = [
     "cuvis-ai-schemas>=0.8.0",
     "numpy",
     "torch",
-    # Declared directly so the pytorch-cu128 source pin applies (uv only honors
-    # tool.uv.sources for direct dependencies; torchvision is otherwise transitive).
+    # Imported directly; also listed in the `cuda` dependency group below so the
+    # group-scoped cu128 pin can bind it for local GPU development.
     "torchvision",
     "pytorch-lightning",
     "pillow>=12.2.0",
@@ -64,7 +64,7 @@ cu3s-to-npz = "cuvis_ai_dataloader.scripts.convert_cu3s_to_npz:cu3s_to_npz_cli"
 # Per-format heavy deps. The orchestrator composer installs the union of extras
 # a run actually activates, so a tiff_paired child env never pulls `cuvis`.
 cu3s = ["cuvis>=3.5.0", "cuvis-il<3.5.4; sys_platform == 'win32'"]
-coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1"]
+coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1,<1.0"]
 tiff = ["tifffile>=2024.5.0"]
 all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
 dev = [
@@ -86,9 +86,23 @@ include = ["cuvis_ai_dataloader*"]
 
 [tool.setuptools_scm]
 
+[tool.uv]
+default-groups = ["cuda"]
+
+[dependency-groups]
+# Floors live in [project].dependencies; this group only carries the cu128 index pin.
+cuda = ["torch", "torchvision"]
+
+# The cu128 pin is scoped to the `cuda` dependency group (installed by default here)
+# because uv also reads a git or path dependency's `[tool.uv.sources]`: an unscoped
+# `torch = { index = ... }` reaches every composed child environment that pulls this
+# repo from git and collides with the host-mirrored torch index there (cu130 on a
+# Jetson Thor host, cpu on a CPU-only host). Consumers never install a dependency's
+# groups, so the scoped pin binds nothing outside this checkout. On an aarch64
+# checkout, sync without the pin: `uv sync --no-default-groups`.
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu128", group = "cuda" }
+torchvision = { index = "pytorch-cu128", group = "cuda" }
 # Local development alternative (uncomment to use a local checkout instead)
 # cuvis-ai-core = { path = "../../cuvis-ai-core/cuvis-ai-core", editable = true }
 
@@ -102,6 +116,7 @@ testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow",
     "gpu: marks tests that require a GPU",
+    "integration: real-SDK tests needing cuvis + .cu3s data (skipped unless CUVIS_AI_IT_* env vars are set)",
 ]
 
 [tool.ruff]

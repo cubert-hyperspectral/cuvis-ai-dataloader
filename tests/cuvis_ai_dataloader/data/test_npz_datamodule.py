@@ -47,15 +47,32 @@ def test_unknown_kwarg_raises(tmp_path):
 
 def test_missing_required_column_raises(tmp_path):
     csv_path = tmp_path / "bad.csv"
-    csv_path.write_text("source,index\ns.cu3s,0\n")  # no path column
+    csv_path.write_text("source,materialized_path\ns.cu3s,f0.npz\n")  # no index column
     with pytest.raises(ValueError, match="missing required column"):
+        MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(csv_path))
+
+
+def test_npz_requires_materialized_path(tmp_path):
+    # npz has no physical frame at `source`; a row without materialized_path is refused.
+    csv_path = tmp_path / "u.csv"
+    csv_path.write_text("source,index\ns.cu3s,0\n")
+    with pytest.raises(ValueError, match="materialized_path"):
+        MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(csv_path))
+
+
+def test_npz_rejects_split_column(tmp_path):
+    # npz is selector-driven; an inline split column is rejected (only cu3s_multi honors it).
+    _write_npz(tmp_path / "f0.npz", with_mask=True)
+    csv_path = tmp_path / "u.csv"
+    csv_path.write_text("source,index,materialized_path,split\ns.cu3s,0,f0.npz,train\n")
+    with pytest.raises(ValueError, match="split"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(csv_path))
 
 
 def test_dataset_reads_cube_mask_and_wavelengths(tmp_path):
     npz = tmp_path / "frame.npz"
     _write_npz(npz, with_mask=True)
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 7, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 7, "frame_id": 0}])
     item = ds[0]
     assert item["cube"].shape == (8, 10, 5)
     assert item["mask"].shape == (8, 10)
@@ -68,7 +85,7 @@ def test_dataset_reads_cube_mask_and_wavelengths(tmp_path):
 def test_dataset_builds_empty_mask_when_absent(tmp_path):
     npz = tmp_path / "frame_nomask.npz"
     _write_npz(npz, with_mask=False)
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 11, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 11, "frame_id": 0}])
     item = ds[0]
     assert item["mask"].shape == (8, 10)
     assert item["mask"].dtype == np.int32
@@ -78,7 +95,7 @@ def test_dataset_builds_empty_mask_when_absent(tmp_path):
 def test_dataset_reads_class_mask_when_present(tmp_path):
     npz = tmp_path / "frame_cm.npz"
     _write_npz(npz, with_mask=True, with_class_mask=True)
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 5, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 5, "frame_id": 0}])
     item = ds[0]
     assert item["class_mask"].shape == (8, 10)
     assert item["class_mask"].dtype == np.uint8
@@ -90,7 +107,7 @@ def test_dataset_reads_class_mask_when_present(tmp_path):
 def test_dataset_emits_zero_class_mask_when_absent(tmp_path):
     npz = tmp_path / "frame_nocm.npz"
     _write_npz(npz, with_mask=True)  # no class_mask key
-    ds = _MultiNpzDataset([{"path": str(npz), "index": 6, "frame_id": 0}])
+    ds = _MultiNpzDataset([{"materialized_path": str(npz), "index": 6, "frame_id": 0}])
     item = ds[0]
     assert item["class_mask"].shape == (8, 10)
     assert item["class_mask"].dtype == np.uint8
@@ -104,7 +121,7 @@ def _write_universe(tmp_path: Path) -> Path:
         _write_npz(tmp_path / f"f{i}.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
     rows = "".join(f"s.cu3s,{i},f{i}.npz\n" for i in range(6))
-    universe.write_text("source,index,path\n" + rows)
+    universe.write_text("source,index,materialized_path\n" + rows)
     return universe
 
 
@@ -164,7 +181,7 @@ def test_selector_setup_fit_and_test_resolve_subsets(tmp_path):
     assert len(dm.val_ds) == 1
     assert len(dm.test_ds) == 2
     # build_dataset_from_refs mapped identity -> the right npz
-    assert dm.test_ds.rows[0]["path"].endswith("f4.npz")
+    assert dm.test_ds.rows[0]["materialized_path"].endswith("f4.npz")
 
 
 def test_selector_predict_empty_iterates_universe(tmp_path):
@@ -191,7 +208,7 @@ def test_universe_duplicate_identity_raises(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     _write_npz(tmp_path / "f1.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\ns.cu3s,0,f1.npz\n")
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\ns.cu3s,0,f1.npz\n")
     with pytest.raises(ValueError, match="duplicate identity"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
 
@@ -200,14 +217,14 @@ def test_universe_duplicate_path_raises(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
     # Distinct identities, same npz path -> rejected (each row must be a distinct file).
-    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\ns.cu3s,1,f0.npz\n")
-    with pytest.raises(ValueError, match="duplicate path"):
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\ns.cu3s,1,f0.npz\n")
+    with pytest.raises(ValueError, match="duplicate materialized_path"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
 
 
 def test_universe_rejects_parent_escape_path(tmp_path):
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\ns.cu3s,0,../f0.npz\n")
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,../f0.npz\n")
     with pytest.raises(ValueError, match="must not contain"):
         MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
 
@@ -216,7 +233,7 @@ def test_universe_group_column_carried(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
     # The optional `group` column is parsed and carried onto SampleRef.group.
-    universe.write_text("source,index,path,group\ns.cu3s,0,f0.npz,batch_a\n")
+    universe.write_text("source,index,materialized_path,group\ns.cu3s,0,f0.npz,batch_a\n")
     dm = MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
     assert dm.enumerate()[0].group == "batch_a"
 
@@ -224,7 +241,7 @@ def test_universe_group_column_carried(tmp_path):
 def test_universe_source_normalized_to_posix(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\nday2\\s.cu3s,0,f0.npz\n")
+    universe.write_text("source,index,materialized_path\nday2\\s.cu3s,0,f0.npz\n")
     # A selector authored with a posix source must still resolve the backslash-authored row.
     dm = MultiNpzDataModule(splits=_split_cfg(train=[0]), universe_csv=str(universe))
     from cuvis_ai_schemas.training.data import DataSplitConfig, Selector, SelectorKind
@@ -299,6 +316,21 @@ def test_samples_per_frame_via_params_dict(tmp_path):
     assert len(dm.train_dataloader().dataset) == 4  # 2 frames x 2
 
 
+def test_nested_cfg_data_construction(tmp_path):
+    # `MultiNpzDataModule(**cfg.data)` with the full nested DataConfig shape (data_module +
+    # splits + params) must work; `data_module` is dropped and params spliced onto the flat sig.
+    universe = _write_universe(tmp_path)
+    dm = MultiNpzDataModule(
+        data_module="npz_multi",
+        splits=_split_cfg(train=[0, 1]),
+        batch_size=1,
+        num_workers=0,
+        params={"universe_csv": str(universe)},
+    )
+    dm.setup(stage="fit")
+    assert len(dm.train_ds) == 2
+
+
 def test_samples_per_frame_validation(tmp_path):
     universe = _write_universe(tmp_path)
     with pytest.raises(ValueError, match="samples_per_frame"):
@@ -326,17 +358,49 @@ def _write_gradient_npz(path: Path, h: int = 8, w: int = 10, c: int = 5) -> None
     )
 
 
-def test_fg_crop_window_in_bounds_hits_fg_and_rejects_oversize():
+def test_fg_crop_window_centers_on_fg_and_rejects_oversize():
     from cuvis_ai_dataloader.data._crop import fg_crop_window
 
     rng = np.random.default_rng(0)
     mask = np.zeros((8, 10), dtype=np.int32)
     mask[2:5, 3:7] = 1
-    top, left = fg_crop_window(mask, (4, 6), fg_percent=1.0, fg_labels=None, rng=rng)
-    assert 0 <= top <= 4 and 0 <= left <= 4  # clamped in-bounds
-    assert mask[top : top + 4, left : left + 6].max() > 0  # foreground-centered window hits object
+    # The chosen fg pixel sits at the window center (out_h//2, out_w//2), not clamped inward.
+    for _ in range(20):
+        top, left = fg_crop_window(mask, (4, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+        cy, cx = top + 4 // 2, left + 6 // 2
+        assert mask[cy, cx] > 0  # the window is centered on a foreground pixel
     with pytest.raises(ValueError, match="exceeds"):
         fg_crop_window(mask, (9, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+
+
+def test_fg_crop_window_near_border_is_not_clamped():
+    from cuvis_ai_dataloader.data._crop import fg_crop_window
+
+    rng = np.random.default_rng(0)
+    mask = np.zeros((8, 10), dtype=np.int32)
+    mask[0, 0] = 1  # a single fg pixel in the top-left corner
+    top, left = fg_crop_window(mask, (4, 6), fg_percent=1.0, fg_labels=None, rng=rng)
+    assert (top, left) == (
+        -2,
+        -3,
+    )  # centered on (0, 0): 0 - 4//2, 0 - 6//2 (window pokes off-frame)
+
+
+def test_crop_with_pad_constant_and_reflect():
+    from cuvis_ai_dataloader.data._crop import crop_with_pad
+
+    arr = (np.arange(8 * 10).reshape(8, 10, 1)).astype(np.float32)  # [H, W, 1]
+    # Window centered on the top-left corner pokes 2 rows / 3 cols off the top-left edge.
+    const = crop_with_pad(arr, -2, -3, (4, 6), "constant")
+    assert const.shape == (4, 6, 1)
+    assert (const[:2, :] == 0).all() and (const[:, :3] == 0).all()  # padded region is 0
+    assert const[2, 3, 0] == arr[0, 0, 0]  # in-frame origin lands at the pad boundary
+    refl = crop_with_pad(arr, -2, -3, (4, 6), "reflect")
+    assert refl.shape == (4, 6, 1)
+    assert (refl >= 0).all()  # reflect mirrors real values, never introduces zeros/negatives here
+    # A fully in-frame window is returned verbatim (no padding).
+    inside = crop_with_pad(arr, 1, 2, (4, 6), "constant")
+    assert np.array_equal(inside, arr[1:5, 2:8])
 
 
 def test_crop_default_off_ships_full_frame(tmp_path):
@@ -384,7 +448,7 @@ def test_crop_not_applied_to_val_and_test(tmp_path):
 def test_crop_with_samples_per_frame_yields_independent_patches(tmp_path):
     _write_gradient_npz(tmp_path / "f0.npz")
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\n")
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\n")
     dm = MultiNpzDataModule(
         splits=_split_cfg(train=[0]),
         universe_csv=str(universe),
@@ -406,7 +470,7 @@ def test_crop_with_samples_per_frame_yields_independent_patches(tmp_path):
 def test_crop_foreground_biased_hits_object(tmp_path):
     _write_npz(tmp_path / "f0.npz", with_mask=True)  # mask block [2:5, 3:7] = 2
     universe = tmp_path / "universe.csv"
-    universe.write_text("source,index,path\ns.cu3s,0,f0.npz\n")
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\n")
     dm = MultiNpzDataModule(
         splits=_split_cfg(train=[0]),
         universe_csv=str(universe),
@@ -446,3 +510,44 @@ def test_crop_fg_percent_validation(tmp_path):
         MultiNpzDataModule(
             splits=_split_cfg(train=[0]), universe_csv=str(universe), crop_fg_percent=1.5
         )
+
+
+def test_crop_pad_mode_validation(tmp_path):
+    universe = _write_universe(tmp_path)
+    with pytest.raises(ValueError, match="crop_pad_mode"):
+        MultiNpzDataModule(
+            splits=_split_cfg(train=[0]), universe_csv=str(universe), crop_pad_mode="edge"
+        )
+
+
+def test_crop_constant_pad_zeros_border_fg(tmp_path):
+    """A foreground pixel in the corner centers the window off-frame; constant pad fills 0."""
+    h, w, c = 8, 10, 5
+    cube = np.ones((h, w, c), dtype=np.float32)  # all-ones so padded zeros are distinguishable
+    mask = np.zeros((h, w), dtype=np.int32)
+    mask[0, 0] = 1  # single corner foreground pixel
+    np.savez(
+        tmp_path / "f0.npz",
+        cube=cube,
+        wavelengths=np.linspace(450, 850, c).astype(np.float32),
+        mask=mask,
+    )
+    universe = tmp_path / "universe.csv"
+    universe.write_text("source,index,materialized_path\ns.cu3s,0,f0.npz\n")
+    dm = MultiNpzDataModule(
+        splits=_split_cfg(train=[0]),
+        universe_csv=str(universe),
+        crop_size=(4, 6),
+        crop_fg_percent=1.0,  # always center on the corner fg pixel
+        crop_pad_mode="constant",
+        batch_size=1,
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    sample = dm.train_dataloader().dataset[0]
+    assert sample["cube"].shape == (4, 6, c)
+    # Centered on (0, 0): the top 2 rows and left 3 cols fall off-frame and are padded with 0.
+    assert (sample["cube"][:2, :, :] == 0).all()
+    assert (sample["cube"][:, :3, :] == 0).all()
+    assert sample["cube"][2, 3, 0] == 1.0  # the in-frame corner is real cube data
+    assert int(sample["mask"][2, 3]) == 1  # fg pixel landed at the window center

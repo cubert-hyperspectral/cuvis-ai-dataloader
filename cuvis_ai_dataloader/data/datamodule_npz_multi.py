@@ -1,12 +1,14 @@
 """npz_multi DataModule: one-frame-per-file compressed NPZ, selector-driven splits.
 
 ``DATA_MODULE_NAME = "npz_multi"`` (no extras: numpy/torch are core deps). One ``.npz`` per
-frame, selected by a core ``splits.json`` over a ``universe_csv`` (a ``universe.csv``):
+frame, selected by a core ``splits.json`` over a ``universe_csv`` (the shared ``universe.csv``):
 
-* ``universe_csv`` (``source, index, path`` + optional ``annotation, format, group``): the sample
-  universe, one row per frame. ``source`` is the opaque logical identity (a cu3s-derived npz
-  carries its posix cu3s path); ``index`` is the read position (== COCO image_id); ``path`` is
-  the ``.npz`` for that frame, relative to the CSV.
+* ``universe_csv`` (``source, index, materialized_path`` + optional ``annotation, format,
+  group``): the sample universe, one row per frame. ``source`` is the opaque logical identity (a
+  cu3s-derived npz carries its posix cu3s path); ``index`` is the read position (== COCO
+  image_id); ``materialized_path`` is the ``.npz`` for that frame, relative to the CSV. npz has no
+  physical frame at ``source``, so ``materialized_path`` is required (unlike cu3s, which defaults
+  it to ``source``). A ``split`` column is rejected here: npz is selector-driven.
 * ``splits.json`` (a core ``DataSplitConfig`` passed as ``DataConfig.splits``): ``file_indices``
   selectors pick each split's subset by ``(source, index)``. Because ``source`` is the cu3s
   identity, one ``splits.json`` resolves against both the raw cu3s data (``cu3s_multi``) and the
@@ -26,8 +28,10 @@ where those measurably help throughput.
 
 Set ``crop_size=(h, w)`` to crop each TRAIN sample to a foreground-biased patch inside the dataset
 (``__getitem__``), shipping ~patch-sized samples instead of whole frames — a large I/O win when the
-model trains on crops. ``crop_fg_percent`` / ``crop_fg_labels`` tune the oversampling. Off by
-default (whole frames, unchanged); val/test/predict always see whole frames for tiled inference.
+model trains on crops. ``crop_fg_percent`` / ``crop_fg_labels`` tune the oversampling, and
+``crop_pad_mode`` (``"constant"`` = 0, the default, or ``"reflect"``) fills the out-of-frame region
+when a foreground-centered window sits against an edge. Off by default (whole frames, unchanged);
+val/test/predict always see whole frames for tiled inference.
 
 .. note::
    The crop is applied in the dataset, i.e. **upstream of the consuming pipeline**. Any downstream
@@ -40,7 +44,6 @@ default (whole frames, unchanged); val/test/predict always see whole frames for 
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -49,22 +52,13 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
-from cuvis_ai_dataloader.data._crop import fg_crop_window
+from cuvis_ai_dataloader.data._crop import PAD_MODES, crop_with_pad, fg_crop_window
+
+from ._extras import accepts_data_config
+from ._universe import parse_universe, validate_universe_csv_param
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cuvis_ai_schemas.training.data import SampleRef
-
-#: Required universe columns: identity (``source``, ``index``) -> physical ``path``.
-_UNIVERSE_REQUIRED = ("source", "index", "path")
-#: Optional universe columns, parsed + carried. ``annotation`` / ``format`` are informational for
-#: npz (which bakes masks in and reads npz only); ``group`` is a reserved leakage-grouping key
-#: (carried onto ``SampleRef.group`` but not yet enforced by the leakage check).
-_UNIVERSE_OPTIONAL = ("annotation", "format", "group")
-
-
-def _posix(path: str) -> str:
-    """Normalize a source-identity string to posix so cross-platform selectors match."""
-    return str(path).replace("\\", "/")
 
 
 class _MultiNpzDataset(Dataset):
@@ -74,7 +68,7 @@ class _MultiNpzDataset(Dataset):
         self._rows = rows
         # Expose the wavelength axis (cu3s parity: consumers read ``dm.<split>_ds.wavelengths_nm``).
         if self._rows:
-            with np.load(self._rows[0]["path"]) as z:
+            with np.load(self._rows[0]["materialized_path"]) as z:
                 wl = np.asarray(z["wavelengths"]).ravel()
             self.wavelengths_nm = wl.astype(np.int32, copy=False)
             self.num_channels = int(self.wavelengths_nm.shape[0])
@@ -84,7 +78,7 @@ class _MultiNpzDataset(Dataset):
 
     @property
     def rows(self) -> list[dict]:
-        """Public read-only view of the per-frame rows (``path, index, frame_id``)."""
+        """Public read-only view of the per-frame rows (``materialized_path, index, frame_id``)."""
         return self._rows
 
     def __len__(self) -> int:
@@ -98,7 +92,7 @@ class _MultiNpzDataset(Dataset):
         full-frame f32 expansion. The whole-frame path (``__getitem__``) expands the cube itself.
         """
         rec = self._rows[idx]
-        with np.load(rec["path"]) as z:
+        with np.load(rec["materialized_path"]) as z:
             cube = np.asarray(z["cube"])  # stored dtype (e.g. float16); NOT expanded to f32 here
             wavelengths = np.asarray(z["wavelengths"]).ravel().astype(np.int32, copy=False)
             mask = (
@@ -133,10 +127,11 @@ class _CropDataset(Dataset):
 
     Each ``__getitem__`` crops the underlying frame's ``cube`` / ``mask`` / ``class_mask`` to
     ``size`` with a fresh window (see :func:`fg_crop_window`), so with ``samples_per_frame=N`` the
-    N visits to a frame yield N *independent* patches. The cube is cropped in its stored dtype and
-    only the patch is cast to float32 (the whole-frame f32 expansion is skipped), and only that
-    patch crosses the collation boundary. The RNG is seeded from ``torch.initial_seed()`` (distinct
-    per DataLoader worker) so workers don't draw correlated crops.
+    N visits to a frame yield N *independent* patches. A foreground-centered window may extend past
+    the border; :func:`crop_with_pad` fills the out-of-frame region with ``pad_mode``. The cube is
+    cropped in its stored dtype and only the patch is cast to float32 (the whole-frame f32 expansion
+    is skipped), and only that patch crosses the collation boundary. The RNG is seeded from
+    ``torch.initial_seed()`` (distinct per DataLoader worker) so workers don't draw correlated crops.
 
     NOTE: this reads the whole frame from disk (npz members can't be partially read); it saves the
     f32 expansion + the transfer, not the read. Removing the redundant per-``samples_per_frame``
@@ -149,11 +144,13 @@ class _CropDataset(Dataset):
         size: tuple[int, int],
         fg_percent: float,
         fg_labels: list[int] | None,
+        pad_mode: str,
     ) -> None:
         self._base = base
         self._size = size
         self._fg_percent = fg_percent
         self._fg_labels = fg_labels
+        self._pad_mode = pad_mode
         self._rng: np.random.Generator | None = None
         # cu3s parity: forward the wavelength axis consumers read off the dataset.
         self.wavelengths_nm = getattr(base, "wavelengths_nm", np.array([], dtype=np.int32))
@@ -185,11 +182,12 @@ class _CropDataset(Dataset):
             fg_labels=self._fg_labels,
             rng=self._generator(),
         )
-        out_h, out_w = self._size
+        # A foreground-centered window may poke past the border; crop_with_pad slices the in-frame
+        # overlap and fills the rest with pad_mode. Cast only the (small) cube patch to float32.
         return {
-            "cube": cube[top : top + out_h, left : left + out_w, :].astype(np.float32),
-            "mask": np.ascontiguousarray(mask[top : top + out_h, left : left + out_w]),
-            "class_mask": np.ascontiguousarray(class_mask[top : top + out_h, left : left + out_w]),
+            "cube": crop_with_pad(cube, top, left, self._size, self._pad_mode).astype(np.float32),
+            "mask": crop_with_pad(mask, top, left, self._size, self._pad_mode),
+            "class_mask": crop_with_pad(class_mask, top, left, self._size, self._pad_mode),
             "wavelengths": wavelengths,
             "mesu_index": int(rec["index"]),
             "frame_id": int(rec["frame_id"]),
@@ -201,6 +199,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
 
     DATA_MODULE_NAME: ClassVar[str] = "npz_multi"
 
+    @accepts_data_config
     def __init__(
         self,
         *,
@@ -215,22 +214,8 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
         crop_size: tuple[int, int] | None = None,
         crop_fg_percent: float = 0.33,
         crop_fg_labels: list[int] | None = None,
-        params: dict | None = None,
-        # Carried by the nested `cls(**cfg.data)` shape; accepted and ignored (the class
-        # identity fixes the module). Any other unknown kwarg raises.
-        data_module: str | None = None,
+        crop_pad_mode: str = "constant",
     ) -> None:
-        if params:
-            universe_csv = universe_csv or params.get("universe_csv")
-            pin_memory = params.get("pin_memory", pin_memory)
-            persistent_workers = params.get("persistent_workers", persistent_workers)
-            worker_multiprocessing_context = params.get(
-                "worker_multiprocessing_context", worker_multiprocessing_context
-            )
-            samples_per_frame = params.get("samples_per_frame", samples_per_frame)
-            crop_size = params.get("crop_size", crop_size)
-            crop_fg_percent = params.get("crop_fg_percent", crop_fg_percent)
-            crop_fg_labels = params.get("crop_fg_labels", crop_fg_labels)
         super().__init__(
             splits=splits,
             batch_size=batch_size,
@@ -252,9 +237,12 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
                 raise ValueError(f"crop_size must be a pair of positive ints, got {crop_size!r}")
         if not 0.0 <= float(crop_fg_percent) <= 1.0:
             raise ValueError(f"crop_fg_percent must be in [0, 1], got {crop_fg_percent!r}")
+        if crop_pad_mode not in PAD_MODES:
+            raise ValueError(f"crop_pad_mode must be one of {PAD_MODES}, got {crop_pad_mode!r}")
         self._crop_size = crop_size
         self._crop_fg_percent = float(crop_fg_percent)
         self._crop_fg_labels = None if crop_fg_labels is None else [int(x) for x in crop_fg_labels]
+        self._crop_pad_mode = crop_pad_mode
 
         if not universe_csv:
             raise ValueError("npz_multi requires 'universe_csv' (the universe.csv lookup).")
@@ -263,19 +251,28 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
                 "npz_multi requires a 'splits' selector config (a DataSplitConfig or splits.json)."
             )
         self._universe_csv = Path(universe_csv).resolve()
-        self._csv_dir = self._universe_csv.parent
-        self._universe = self._parse_universe(self._universe_csv)
+        self._universe = parse_universe(
+            self._universe_csv,
+            require_materialized_path=True,  # npz has no frame at `source`; the .npz is the file
+            accept_split=False,  # npz is selector-driven; a split column is rejected
+            unique_materialized_path=True,  # one .npz per row
+            allow_index_ranges=False,  # one row per frame; no ranges
+        )
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
         """Validate that ``universe_csv`` is given, ends in ``.csv``, and exists."""
-        universe_csv = params.get("universe_csv")
-        if not universe_csv:
-            raise ValueError("npz_multi requires 'universe_csv' in params (with a splits.json).")
-        if not str(universe_csv).endswith(".csv"):
-            raise ValueError(f"universe_csv must end with .csv: {universe_csv!r}")
-        if not Path(universe_csv).is_file():
-            raise ValueError(f"universe_csv does not exist: {universe_csv}")
+        validate_universe_csv_param(params, "npz_multi")
+
+    def supported_attrs(self) -> frozenset[str]:
+        """NPZ frames carry no COCO category map, so no metadata attrs can be supplied.
+
+        Returning an empty set lets constraint evaluation treat an anomaly-based constraint
+        as ``unavailable`` (soft-skip / warn) rather than forcing ``enumerate`` to raise.
+        A ``tags`` / ``categories`` *selector* still hard-raises in ``enumerate`` (that is a
+        genuine authoring error), but an opportunistic constraint attr is skipped cleanly.
+        """
+        return frozenset()
 
     # -- selector path ---------------------------------------------------------
     def enumerate(self, required_attrs: frozenset[str] = frozenset()) -> list[SampleRef]:
@@ -309,7 +306,9 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
     def build_dataset_from_refs(self, refs: list[SampleRef]) -> Dataset:
         """Build the dataset for a resolved subset, mapping ``(source, index)`` -> ``.npz``."""
         assert self._universe is not None
-        by_identity = {(rec["source"], int(rec["index"])): rec["path"] for rec in self._universe}
+        by_identity = {
+            (rec["source"], int(rec["index"])): rec["materialized_path"] for rec in self._universe
+        }
         rows = []
         for i, ref in enumerate(refs):
             key = (ref.source, int(ref.index if ref.index is not None else 0))
@@ -319,7 +318,7 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
             rows.append(
                 {
                     "frame_id": i,
-                    "path": path,
+                    "materialized_path": path,
                     "index": int(ref.label_id if ref.label_id is not None else key[1]),
                 }
             )
@@ -341,7 +340,11 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
             return super().train_dataloader()
         base_train = self._train_ds
         self._train_ds = _CropDataset(
-            base_train, self._crop_size, self._crop_fg_percent, self._crop_fg_labels
+            base_train,
+            self._crop_size,
+            self._crop_fg_percent,
+            self._crop_fg_labels,
+            self._crop_pad_mode,
         )
         try:
             return super().train_dataloader()
@@ -366,61 +369,3 @@ class MultiNpzDataModule(BaseCuvisAIDataModule):
             if self._worker_multiprocessing_context:
                 kwargs["multiprocessing_context"] = self._worker_multiprocessing_context
         return DataLoader(dataset, **kwargs)
-
-    def _parse_universe(self, csv_path: Path) -> list[dict[str, Any]]:
-        """Parse the selector-path universe (``source, index, path`` + optional columns).
-
-        ``source`` is normalized to posix so a selector authored on one platform resolves on
-        another. Three failures are rejected loudly rather than silently mis-resolving downstream:
-        a duplicate ``(source, index)`` identity, two rows pointing at the same ``path``, and a
-        ``path`` that escapes the CSV directory via ``..``.
-        """
-        out: list[dict[str, Any]] = []
-        seen_identity: set[tuple[str, int]] = set()
-        seen_path: set[str] = set()
-        with csv_path.open(encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            missing = [c for c in _UNIVERSE_REQUIRED if c not in (reader.fieldnames or [])]
-            if missing:
-                raise ValueError(
-                    f"{csv_path}: missing required column(s) {missing}. "
-                    f"Required: {list(_UNIVERSE_REQUIRED)} "
-                    f"(optional: {list(_UNIVERSE_OPTIONAL)}). Extra columns are allowed and ignored."
-                )
-            for row in reader:
-                source = _posix(row["source"])
-                index = int(str(row["index"]).strip())
-                identity = (source, index)
-                if identity in seen_identity:
-                    raise ValueError(
-                        f"{csv_path}: duplicate identity (source, index)={identity}; "
-                        "each (source, index) must map to exactly one npz."
-                    )
-                seen_identity.add(identity)
-                resolved = str(self._resolve(row["path"]))
-                if resolved in seen_path:
-                    raise ValueError(
-                        f"{csv_path}: duplicate path {resolved!r}; "
-                        "each row must point at a distinct npz."
-                    )
-                seen_path.add(resolved)
-                rec: dict[str, Any] = {"source": source, "index": index, "path": resolved}
-                group = (row.get("group") or "").strip()
-                if group:
-                    rec["group"] = _posix(group)
-                out.append(rec)
-        if not out:
-            raise ValueError(f"{csv_path}: no rows.")
-        return out
-
-    def _resolve(self, raw: str) -> Path:
-        """Resolve a relative ``path`` against the CSV's parent dir; reject ``..`` escapes.
-
-        ``path`` is stored relative to the CSV (portable). A ``..`` component is rejected: it
-        would let the universe reach outside its own directory tree, defeating portability and
-        opening a traversal footgun. Absolute paths pass through unchanged.
-        """
-        p = Path(raw)
-        if ".." in p.parts:
-            raise ValueError(f"universe path must not contain '..': {raw!r}")
-        return p if p.is_absolute() else (self._csv_dir / p).resolve()

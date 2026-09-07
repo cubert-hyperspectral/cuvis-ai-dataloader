@@ -3,13 +3,17 @@
 Reads each measurement (Preview -> Reflectance), bakes the frame's COCO annotations into
 ``mask`` + ``class_mask`` (when annotations are given), optionally crops, and writes one
 ``.npz`` per frame. **No train/val/test split is assigned** — splitting is a separate concern;
-this only writes the npz (+ an optional universe ``source,index,path``).
+this only writes the npz (+ an optional universe ``source,index,materialized_path``).
 
 Examples::
 
     cu3s-to-npz --cu3s-dir /data/lentils --out-dir /data/lentils_npz \
         --annotations sibling --universe-csv /data/lentils_npz/universe.csv
     cu3s-to-npz --cu3s a.cu3s b.cu3s --out-dir out --annotations coco.json --crop 300,300,300,300
+
+    # Re-reference a factory-fallback session against day-matched white/dark recordings:
+    cu3s-to-npz --cu3s bad_calib.cu3s --out-dir out --annotations none \
+        --white-ref day2_white.cu3s --dark-ref day2_dark.cu3s
 """
 
 from __future__ import annotations
@@ -59,7 +63,25 @@ def cu3s_to_npz_cli() -> None:
         help="cuvis ProcessingMode (default Reflectance; 'none' uses the recorded cube).",
     )
     parser.add_argument(
-        "--universe-csv", default=None, help="Write a source,index,path universe CSV here."
+        "--white-ref",
+        default=None,
+        metavar="CU3S[:FRAME]",
+        help="cu3s reference supplied as the White reference (overriding the baked one): "
+        "'path'/'path:0' = measurement 0, 'path:N' = measurement N, 'path:-1' = the session's "
+        "embedded reference. Applies to every input; use references matching the capture conditions.",
+    )
+    parser.add_argument(
+        "--dark-ref",
+        default=None,
+        metavar="CU3S[:FRAME]",
+        help="cu3s reference supplied as the Dark reference (overriding the baked one): "
+        "'path'/'path:0' = measurement 0, 'path:N' = measurement N, 'path:-1' = the session's "
+        "embedded reference. Applies to every input; use references matching the capture conditions.",
+    )
+    parser.add_argument(
+        "--universe-csv",
+        default=None,
+        help="Write a source,index,materialized_path universe CSV here.",
     )
     parser.add_argument(
         "--limit", type=int, default=0, help="Convert at most N frames per cu3s (0 = all)."
@@ -82,6 +104,8 @@ def cu3s_to_npz_cli() -> None:
         annotations=annotations,
         crop=args.crop,
         processing_mode=processing_mode,
+        white_ref=args.white_ref,
+        dark_ref=args.dark_ref,
         universe_csv=args.universe_csv,
         compress=not args.no_compress,
         frame_limit=args.limit or None,

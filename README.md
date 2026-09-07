@@ -41,11 +41,15 @@ Splits are defined in one of two ways:
   Composable selectors over an attributed sample universe are resolved into a
   committable `splits.json` by the `resolve-splits` CLI, then referenced from a
   `DataConfig.splits`.
-- **CSV `split` column** is a convenience for `cu3s_multi` (`split, cu3s_path,
-  annotation_json, image_id`): the CSV rows can become the selector universe, and
-  `resolve-splits --from-csv` turns that CSV into a committable `splits.json`.
-  `npz_multi` is selector-only: a `splits.json` (`DataConfig.splits`) over a
-  `universe_csv` (`source, index, path`).
+- **One `universe.csv` vocabulary** (`source, index` + optional `materialized_path, split,
+  annotation, format, group`) is read by both `cu3s_multi` and `npz_multi` through a shared
+  parser; each module keeps its own reader. `cu3s_multi` may carry an inline `split` column
+  (present → module-owned; absent → needs a `splits.json`), and `resolve-splits --from-csv`
+  turns that column into a committable `splits.json`. `npz_multi` is selector-only (it rejects a
+  `split` column) and requires `materialized_path` (the `.npz`); for `cu3s_multi`,
+  `materialized_path` defaults to `source` (a raw `.cu3s` is its own file). `source` is the posix
+  identity a `splits.json` selector keys on, so one split resolves against both the raw cu3s data
+  and the converted npz.
 
 ## Installation
 
@@ -132,8 +136,10 @@ Predictor(pipeline, dm).predict()
 - `mask` (optional): `[H, W]` int32 ground truth (zeros are emitted when absent)
 - `class_mask` (optional): `[H, W]` uint8 per-pixel COCO category id (0 = background)
 
-The `universe_csv` requires `source, index, path` (optional `annotation, format, group`; extra
-columns are ignored); `path` is relative to the CSV and must not escape it via `..`. Each sample is
+The `universe_csv` requires `source, index` plus `materialized_path` (the `.npz`, required for npz;
+optional `annotation, format, group`; extra columns are ignored); `materialized_path` is relative
+to the CSV and must not escape it via `..`. A `split` column is rejected here (npz is
+selector-only). Each sample is
 `{cube, mask, class_mask, wavelengths, mesu_index, frame_id}`. Unlike the cu3s modules, `npz_multi`
 honors `pin_memory` / `persistent_workers` / `worker_multiprocessing_context` (pure-CPU numpy loads
 benefit from them).
@@ -165,6 +171,54 @@ data:
   params:
     universe_csv: universe.csv
 ```
+
+### GUI-authored splits over a cu3s folder (contract)
+
+External split authors (e.g. the CuvisNEXT split designer) write a frozen `splits.json`
+(a serialized `DataSplitConfig` with `file_indices` selectors) against a **folder of cu3s
+files with per-measurement granularity**. That contract is `cu3s` folder mode with
+`frames: measurements`:
+
+```yaml
+data:
+  data_module: cu3s
+  batch_size: 1
+  num_workers: 0
+  splits:
+    splits_path: <absolute path to the frozen splits.json>
+  params:
+    data_dir: <folder holding the .cu3s files>
+    frames: measurements
+    recursive: true          # walk per-day subfolders
+    processing_mode: Reflectance
+```
+
+The frozen rules both sides implement:
+
+- **Universe** = every `*.cu3s` under `data_dir` (recursive when `recursive: true`),
+  one sample per measurement `0..N-1`, ordered by `(source, index)`.
+- **Source identity is canonical**: the absolute path with forward slashes and
+  filesystem-true case — Python `Path(p).resolve().as_posix()`, C++/Qt
+  `QFileInfo::canonicalFilePath()`. Selectors in the authored `splits.json` must carry
+  exactly this form; matching is string equality, so a moved or renamed member file
+  fails loud with "matched 0 samples" rather than silently shrinking a split.
+- **`uid` = `<source>#<index>`** (the sibling COCO image id equals the read position, so
+  it never extends the uid). `universe_hash` = sha256 over the ordered uids, each
+  followed by `\n` (`cuvis_ai_core.data.splits_io.universe_hash`). For `file_indices`
+  splits the server treats the hash as informational (only positional `dir_indices`
+  splits are hash-verified); staleness detection is the author's concern.
+- **Annotations** are the sibling `<stem>.json` COCO next to each cu3s (attached
+  automatically); an empty `predict` stage means the whole universe.
+- **Training stages require splits.** `cu3s` does not own split semantics: `fit` /
+  `validate` / `test` with no `DataConfig.splits` raise instead of silently iterating
+  the whole universe (which would contaminate statistical initialization with anomalous
+  frames). Split-less `predict` over the whole universe stays valid.
+
+The golden fixture `tests/cuvis_ai_dataloader/fixtures/gui_authored_splits.json` is the
+byte-level reference of the authored shape (the `{DATA_DIR}` token stands in for the
+machine-specific folder); the same file is committed in the CuvisNEXT test suite and its
+`universe_hash` doubles as the shared sha256 test vector. Changing it is a cross-repo
+contract change.
 
 ## Architecture
 

@@ -47,7 +47,9 @@ def resolve_splits_cli() -> None:
     parser = argparse.ArgumentParser(
         description="Generate a committable splits.json for a cuvis-ai data module.",
     )
-    parser.add_argument("--from-csv", default=None, help="Import a cu3s_multi splits CSV.")
+    parser.add_argument(
+        "--from-csv", default=None, help="Import a cu3s_multi universe.csv's 'split' column."
+    )
     parser.add_argument(
         "--data-module", default=None, help="Data module name to enumerate + split."
     )
@@ -70,7 +72,7 @@ def resolve_splits_cli() -> None:
     if args.from_csv:
         from cuvis_ai_dataloader.data.datamodule_cu3s_multi import MultiCu3sDataModule
 
-        module = MultiCu3sDataModule(params={"splits_csv": args.from_csv})
+        module = MultiCu3sDataModule(params={"universe_csv": args.from_csv})
         splits = import_csv_splits(module)
     else:
         if not args.data_module:

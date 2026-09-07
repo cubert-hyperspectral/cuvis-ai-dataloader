@@ -5,7 +5,103 @@ uses semantic versioning.
 
 ## [Unreleased]
 
-- Added an optional foreground-biased **crop inside the dataset** to `MultiNpzDataModule`: set `crop_size=(h, w)` to crop each **train** sample to a patch in `__getitem__` (nnU-Net-style foreground oversampling, tuned by `crop_fg_percent` / `crop_fg_labels`), so workers ship ~patch-sized samples instead of whole frames — a large I/O win when the model trains on crops. Composes with `samples_per_frame=N` to yield N independent patches per frame. The cube is cropped in its stored dtype and only the patch is cast to float32, skipping the whole-frame f32 expansion. Off by default (whole frames, byte-for-byte unchanged); val/test/predict always see whole frames for tiled inference.
+- Added an optional foreground-biased **crop inside the dataset** to `MultiNpzDataModule`: set `crop_size=(h, w)` to crop each **train** sample to a patch in `__getitem__` (nnU-Net-style foreground oversampling, tuned by `crop_fg_percent` / `crop_fg_labels`), so workers ship ~patch-sized samples instead of whole frames — a large I/O win when the model trains on crops. Composes with `samples_per_frame=N` to yield N independent patches per frame. A foreground-centered window may sit against a border; `crop_pad_mode` fills the out-of-frame region (`"constant"` = 0, the default, or `"reflect"`). The cube is cropped in its stored dtype and only the patch is cast to float32, skipping the whole-frame f32 expansion. Off by default (whole frames, byte-for-byte unchanged); val/test/predict always see whole frames for tiled inference.
+
+## 0.6.2 - 2026-08-31
+
+- Scoped the torch/torchvision cu128 index pin to a `cuda` dependency group (installed by
+  default in this checkout): uv reads a git dependency's `[tool.uv.sources]`, so the previous
+  unscoped pin leaked into every composed child environment pulling this plugin from git and
+  collided with the host-mirrored torch index there (cu130 on a Jetson Thor host). Consumers
+  never install a dependency's groups, so the scoped pin binds nothing outside this checkout;
+  the committed lock now resolves torch from the cu128 index. On an aarch64 checkout, sync
+  without the pin: `uv sync --no-default-groups`.
+
+## 0.6.1 - 2026-08-27
+
+- Fix RLE-object `segmentation` payloads silently rasterizing to 0 px under dataclass-wizard
+  1.x: `Annotation.segmentation` is typed `Any` so polygon lists and RLE dicts pass through
+  verbatim on every wizard version and entry point.
+- `create_mask` raises `ValueError` on a present but unrecognized `segmentation` payload (flat
+  polygon lists, RLE dicts without `counts`) instead of skipping it silently.
+- Cap `dataclass-wizard<1.0` in the `coco` extra until the 1.x dump path is validated.
+
+## 0.6.0 - 2026-08-21
+
+- **`CocoLabeler` reads both COCO label dialects.** Track-dialect files (top-level
+  `videos`, one annotation per track with per-frame parallel arrays — the shape the
+  mask-tracking writer historically emitted and CuvisNEXT saves for tracked sessions) are
+  now converted to standard image-keyed COCO in memory before pycocotools indexes them,
+  with object identity preserved as an additive `track_id` per annotation. Previously such
+  files failed at construction with a bare `KeyError: 'image_id'`, so datasets annotated
+  with the tracking tools could not be used for training. Malformed or ambiguous inputs
+  (hybrid `videos`+`images` files, empty or multi-entry `videos`, duplicate
+  `frame_indices`, parallel-array length mismatches, non-RLE segmentation entries) are
+  rejected with a `ValueError` naming the file instead of being silently mis-parsed.
+- **Standard RLE-object `segmentation` rasterizes.** `create_mask`, `load_for`, and
+  `Annotation.to_torchvision` now decode the standard COCO RLE dict form
+  (`{"size": [H, W], "counts": str | list}`) — the form image-dialect mask exports carry —
+  alongside polygons and the legacy non-standard `mask` key. Compressed string counts
+  decode at their declared size and are padded/cropped to the label canvas on mismatch
+  (with a warning); list counts keep the existing canvas-authoritative decode.
+
+## 0.5.1 - 2026-08-20
+
+- Documented the torch cu128 index tables as local-development-only: installs of this package
+  as a git or registry dependency never read them, and composed child environments mirror the
+  host's torch build (cuvis-ai-core >= 0.12.1).
+- **Custom white/dark reference override for the cu3s reflectance path.** `Cu3sCubeReader` now
+  accepts `white_ref` / `dark_ref` (paths to cu3s reference recordings) so an application can
+  supply its own references at load time — reusing a shared calibration across sessions,
+  non-destructively re-processing with updated references without re-exporting, or reading
+  sessions that carry no usable baked references. Each reference is given as `path` or `path:frame`
+  — `path`/`path:0` uses the reference session's measurement 0, `path:N` uses measurement N (for a
+  session holding several references), and `path:-1` uses that session's embedded/baked reference
+  (matching `cuvis_batch_exporter`'s `:frame_no` with `-1` = embedded). References are loaded via
+  `get_measurement` — deliberately not `get_reference`, which on some sessions can return an
+  unintended baked reference, except the explicit `-1` embedded case — and installed with
+  `ProcessingContext.set_reference` before the processing mode is applied. A supplied reference also satisfies the Reflectance / SpectralRadiance
+  reference validation. Threaded through `convert_cu3s_file` / `convert_cu3s` (`white_ref=` /
+  `dark_ref=`) and the `cu3s-to-npz` CLI (`--white-ref` / `--dark-ref`). No references supplied →
+  behaviour unchanged (baked references, bit-for-bit). This supplies references; it does not repair
+  wrong ones — if a session's baked references are incorrect, correct them at the source with the
+  exporter (`cuvis_batch_exporter --force_white/--force_dark`), byte-identical to this override.
+  Use references matching the measurement's capture conditions; with `resume=True`
+  previously-converted npz are reused as-is, so clear the output dir when re-converting with
+  different references.
+
+## 0.5.0 - 2026-07-27
+
+- **cu3s reader cache is now a bounded LRU with close-on-evict.** `_Cu3sRefDataset` keeps at most `max_open_sessions` (default 4) open SDK sessions in an LRU, closing the least-recently-used on eviction (and via `close()` / `__del__`); each open Reflectance session holds native SDK GPU pools, and too many open at once crash the SDK's CUDA allocator ("illegal memory access") when torch shares the GPU. Keeps the per-dataset session footprint flat across a shuffled multi-file epoch.
+- **`npz_multi` opts out of constraint sample-attrs (`supported_attrs() == frozenset()`).** The NPZ pool carries no per-frame tag/category metadata, so core's split-constraint evaluation reports `no_train_anomalous` as `unavailable` (soft-skipped or raised per severity) instead of crashing `enumerate` with `NotImplementedError`. Deriving `category_ids` from the baked `class_mask` is recorded as a follow-up in `TODOS.md`.
+- **DataModule constructors de-bloated: nested `DataConfig` handling centralized, three dead
+  `cu3s` args removed.** A shared `accepts_data_config` decorator (`data/_extras.py`) now owns the
+  `DataModule(**cfg.data)` nested-shape normalization (drops the redundant `data_module`, splices
+  `params` onto the flat signature), replacing the duplicated `params`/`data_module`/`if params:`
+  block in all four modules (`cu3s`, `cu3s_multi`, `npz_multi`, `tiff_paired`); behavior is
+  unchanged for every real call shape. `Cu3sDataModule` drops three unused constructor args:
+  `normalize_to_unit` (was accepted but inert), `dataset_name` (the `data_dir` + `dataset_name`
+  single-file composition), and `glob` (cu3s folder mode is always `*.cu3s`). An unrecognized key
+  inside `params` now raises `TypeError` instead of being silently dropped, matching the flat-path
+  loud-rejection. Breaking only for callers that passed one of the three removed args (they now
+  fail loudly at construction); no shipped config used them.
+- **`cu3s` folder mode gained per-measurement enumeration (`frames: measurements`) + `recursive`.**
+  Folder sources can now enumerate one sample per measurement per file (canonical absolute
+  `Path.resolve().as_posix()` sources, sibling `<stem>.json` COCO attached, uid = `source#index`),
+  which is the contract for externally authored `splits.json` (the CuvisNEXT split designer);
+  `recursive: true` walks per-day subfolders. Default `frames: file` keeps the legacy
+  one-ref-per-file-at-measurement-0 behavior. Documented in the README ("GUI-authored splits over
+  a cu3s folder"), pinned by the committed golden fixture
+  `tests/cuvis_ai_dataloader/fixtures/gui_authored_splits.json` (shared byte-for-byte with the
+  CuvisNEXT test suite; its `universe_hash` is the shared sha256 test vector).
+- **`cu3s` now refuses split-less training stages.** `setup("fit"/"validate"/"test")` with no
+  `DataConfig.splits` raises instead of silently iterating the whole universe, which let
+  statistical initialization (e.g. MinMax) ingest anomalous frames with no error; split-less
+  `setup("predict")` (and `setup()` building only the predict dataset) keeps serving the whole
+  universe. Breaking for pipelines that trained a cu3s source without splits — add a `splits`
+  block (e.g. a frozen `splits.json` via `splits_path`).
+- **Unified `cu3s_multi` + `npz_multi` onto one `universe.csv` vocabulary via a shared parser (`data/_universe.py`).** Both modules now read `source, index` (required) plus optional `materialized_path, split, annotation, format, group`. `cu3s_multi`'s `splits_csv` argument is renamed `universe_csv` and its old columns (`split, cu3s_path, annotation_json, image_id`) are gone; `npz_multi`'s `path` column is renamed `materialized_path`. `materialized_path` defaults to `source` for cu3s (a raw `.cu3s` is its own file) and is required for npz (the physical file is the derived `.npz`). An inline `split` column is honored only by `cu3s_multi` (present → module-owned, absent → a training stage needs a splits.json; a splits.json always wins), and rejected by `npz_multi`. `source` is posix-normalized in both modules, fixing a cross-module `(source, index)` selector-key mismatch on Windows so one splits.json resolves against both the raw cu3s data and the converted npz. `cu3s_multi` no longer decouples a scalar `image_id` from the read index (`index` is now both). Regenerate every `universe.csv` / split CSV to the new columns; the converter, `cu3s-to-npz`, and `resolve-splits --from-csv` emit/consume them.
+>>>>>>> origin/main
 
 ## 0.4.0 - 2026-07-15
 

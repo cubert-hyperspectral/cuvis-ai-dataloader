@@ -408,3 +408,333 @@ class TestCocoLabelerCanvasFallback:
         lab = CocoLabeler(self._zero_dim_coco(tmp_path))
         out = lab.load_for(99, {"cube": np.zeros((10, 12, 1), dtype=np.float32)})["mask"]
         assert out.shape == (10, 12) and int(out.max()) == 0
+
+
+def _rect_mask(height, width, r0, r1, c0, c1):
+    import numpy as np
+
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[r0:r1, c0:c1] = 1
+    return mask
+
+
+def _list_counts(mask):
+    """Column-major alternating [bg, fg, ...] run lengths for a binary mask."""
+    counts, prev, run = [], 0, 0
+    for value in mask.flatten(order="F"):
+        if int(value) == prev:
+            run += 1
+        else:
+            counts.append(run)
+            prev = int(value)
+            run = 1
+    counts.append(run)
+    return counts
+
+
+class TestTrackDialect:
+    """CocoLabeler must read track-dialect files (top-level ``videos``, per-track parallel
+    arrays, compressed-str RLE) — the shape the mask-tracking writer historically emitted —
+    by converting them to image-keyed COCO in memory."""
+
+    HEIGHT, WIDTH = 10, 12
+
+    @classmethod
+    def _payload(cls, with_optional=True):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg0 = coco_rle_encode(_rect_mask(cls.HEIGHT, cls.WIDTH, 2, 5, 3, 7))
+        seg2 = coco_rle_encode(_rect_mask(cls.HEIGHT, cls.WIDTH, 6, 9, 1, 4))
+        annotation = {
+            "id": 1,
+            "track_id": 7,
+            "category_id": 2,
+            "segmentations": [seg0, None, seg2],
+        }
+        if with_optional:
+            annotation["detection_scores"] = [0.9, None, 0.8]
+            annotation["bboxes"] = [[3.0, 2.0, 4.0, 3.0], None, [1.0, 6.0, 3.0, 3.0]]
+            annotation["areas"] = [12.0, None, 9.0]
+        return {
+            "info": {"description": "Mask tracking results"},
+            "videos": [
+                {
+                    "id": 1,
+                    "name": "clip",
+                    "frame_indices": [0, 1, 2],
+                    "start_frame": 0,
+                    "length": 3,
+                    "height": cls.HEIGHT,
+                    "width": cls.WIDTH,
+                }
+            ],
+            "annotations": [annotation],
+            "categories": [{"id": 2, "name": "stone"}],
+        }
+
+    @classmethod
+    def _write(cls, tmp_path, payload):
+        path = tmp_path / "track.json"
+        path.write_text(json.dumps(payload))
+        return path
+
+    def _labeler(self, tmp_path, payload):
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import CocoLabeler
+
+        return CocoLabeler(self._write(tmp_path, payload))
+
+    def test_frames_become_image_ids(self, tmp_path):
+        lab = self._labeler(tmp_path, self._payload())
+        assert lab.image_ids == [0, 1, 2]
+        assert lab.is_annotated(0) and lab.is_annotated(2)
+        assert not lab.is_annotated(1)  # None-padded frame carries no annotation
+        assert lab.categories_for(0) == [2]
+
+    def test_load_for_rasterizes_track_masks(self, tmp_path):
+        import numpy as np
+
+        lab = self._labeler(tmp_path, self._payload())
+        cube = np.zeros((self.HEIGHT, self.WIDTH, 1), dtype=np.float32)
+        mask0 = lab.load_for(0, {"cube": cube})["mask"]
+        assert mask0.shape == (self.HEIGHT, self.WIDTH) and mask0.dtype == np.int32
+        assert (mask0[2:5, 3:7] == 2).all()
+        assert int((mask0 == 2).sum()) == 12
+        mask1 = lab.load_for(1, {"cube": cube})["mask"]
+        assert int(mask1.max()) == 0
+        mask2 = lab.load_for(2, {"cube": cube})["mask"]
+        assert (mask2[6:9, 1:4] == 2).all()
+        assert int((mask2 == 2).sum()) == 9
+
+    def test_track_identity_and_scores_survive_conversion(self, tmp_path):
+        lab = self._labeler(tmp_path, self._payload())
+        raw_annotations = lab._coco._coco.dataset["annotations"]
+        assert [ann["image_id"] for ann in raw_annotations] == [0, 2]
+        assert all(ann["track_id"] == 7 for ann in raw_annotations)
+        assert [ann["score"] for ann in raw_annotations] == [0.9, 0.8]
+        assert all(ann["iscrowd"] == 1 for ann in raw_annotations)
+
+    def test_bbox_and_area_derived_when_absent(self, tmp_path):
+        lab = self._labeler(tmp_path, self._payload(with_optional=False))
+        raw_annotations = lab._coco._coco.dataset["annotations"]
+        first = raw_annotations[0]
+        assert first["bbox"] == [3.0, 2.0, 4.0, 3.0]
+        assert first["area"] == 12.0
+        assert "score" not in first
+
+    def test_hybrid_file_rejected(self, tmp_path):
+        payload = self._payload()
+        payload["images"] = [{"id": 0, "file_name": "f", "height": 10, "width": 12}]
+        with pytest.raises(ValueError, match="hybrid"):
+            self._labeler(tmp_path, payload)
+
+    def test_empty_videos_rejected(self, tmp_path):
+        payload = self._payload()
+        payload["videos"] = []
+        with pytest.raises(ValueError, match="empty or invalid"):
+            self._labeler(tmp_path, payload)
+
+    def test_multi_video_rejected(self, tmp_path):
+        payload = self._payload()
+        payload["videos"] = payload["videos"] + [dict(payload["videos"][0], id=2)]
+        with pytest.raises(ValueError, match="unsupported"):
+            self._labeler(tmp_path, payload)
+
+    def test_duplicate_frame_indices_rejected(self, tmp_path):
+        payload = self._payload()
+        payload["videos"][0]["frame_indices"] = [0, 0, 2]
+        with pytest.raises(ValueError, match="duplicates"):
+            self._labeler(tmp_path, payload)
+
+    def test_parallel_array_mismatch_rejected(self, tmp_path):
+        payload = self._payload()
+        payload["annotations"][0]["segmentations"] = payload["annotations"][0]["segmentations"][:2]
+        with pytest.raises(ValueError, match="segmentations"):
+            self._labeler(tmp_path, payload)
+
+        payload = self._payload()
+        payload["annotations"][0]["areas"] = [12.0, None]
+        with pytest.raises(ValueError, match="areas"):
+            self._labeler(tmp_path, payload)
+
+    def test_non_rle_segmentation_rejected(self, tmp_path):
+        payload = self._payload()
+        payload["annotations"][0]["segmentations"][0] = [[1, 1, 5, 1, 5, 5, 1, 5]]
+        with pytest.raises(ValueError, match="non-RLE"):
+            self._labeler(tmp_path, payload)
+
+
+class TestRleDictSegmentation:
+    """Standard COCO RLE-object ``segmentation`` (str or list counts) must rasterize — the
+    form image-dialect exports carry for masks — alongside the legacy ``mask`` key."""
+
+    HEIGHT, WIDTH = 10, 12
+
+    def _labeler_for_segmentation(self, tmp_path, segmentation, height=None, width=None):
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import CocoLabeler
+
+        payload = {
+            "info": {},
+            "licenses": [{"id": 0, "name": "x"}],
+            "images": [
+                {
+                    "id": 0,
+                    "file_name": "frame_000000",
+                    "height": height or self.HEIGHT,
+                    "width": width or self.WIDTH,
+                }
+            ],
+            "annotations": [
+                {
+                    "id": 1,
+                    "image_id": 0,
+                    "category_id": 3,
+                    "segmentation": segmentation,
+                    "iscrowd": 1,
+                }
+            ],
+            "categories": [{"id": 3, "name": "pill"}],
+        }
+        path = tmp_path / "image_rle.json"
+        path.write_text(json.dumps(payload))
+        return CocoLabeler(path)
+
+    def _cube(self):
+        import numpy as np
+
+        return np.zeros((self.HEIGHT, self.WIDTH, 1), dtype=np.float32)
+
+    def test_compressed_str_counts_rasterize(self, tmp_path):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg = coco_rle_encode(_rect_mask(self.HEIGHT, self.WIDTH, 2, 5, 3, 7))
+        assert isinstance(seg["counts"], str)
+        mask = self._labeler_for_segmentation(tmp_path, seg).load_for(0, {"cube": self._cube()})[
+            "mask"
+        ]
+        assert (mask[2:5, 3:7] == 3).all()
+        assert int((mask == 3).sum()) == 12
+
+    def test_list_counts_rasterize(self, tmp_path):
+        rect = _rect_mask(self.HEIGHT, self.WIDTH, 2, 5, 3, 7)
+        seg = {"size": [self.HEIGHT, self.WIDTH], "counts": _list_counts(rect)}
+        mask = self._labeler_for_segmentation(tmp_path, seg).load_for(0, {"cube": self._cube()})[
+            "mask"
+        ]
+        assert (mask[2:5, 3:7] == 3).all()
+        assert int((mask == 3).sum()) == 12
+
+    def test_size_mismatch_fitted_to_canvas(self, tmp_path):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg = coco_rle_encode(_rect_mask(6, 6, 1, 4, 1, 4))  # declared 6x6, canvas 10x12
+        mask = self._labeler_for_segmentation(tmp_path, seg).load_for(0, {"cube": self._cube()})[
+            "mask"
+        ]
+        assert mask.shape == (self.HEIGHT, self.WIDTH)
+        assert (mask[1:4, 1:4] == 3).all()
+        assert int((mask == 3).sum()) == 9
+
+    def test_bboxless_annotation_rasterizes(self, tmp_path):
+        # No bbox key at all: rasterization must not depend on it.
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg = coco_rle_encode(_rect_mask(self.HEIGHT, self.WIDTH, 0, 2, 0, 2))
+        lab = self._labeler_for_segmentation(tmp_path, seg)
+        mask = lab.load_for(0, {"cube": self._cube()})["mask"]
+        assert int((mask == 3).sum()) == 4
+
+    def test_to_torchvision_decodes_rle_dict(self):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg = coco_rle_encode(_rect_mask(self.HEIGHT, self.WIDTH, 2, 5, 3, 7))
+        ann = Annotation(id=1, image_id=0, category_id=3, segmentation=seg)
+        result = ann.to_torchvision(size=(self.HEIGHT, self.WIDTH))
+        assert int(result["segmentation"].sum()) == 12
+
+
+class TestSegmentationPayloadIntegrity:
+    """``Annotation`` must carry the ``segmentation`` payload verbatim on every wizard version.
+
+    The v1 loader (opt-in in dataclass-wizard 0.39.x, the default since 1.0) resolves a
+    ``list | dict | None`` union list-first and coerces an RLE dict into the list of its
+    keys, after which every RLE-object annotation rasterizes to 0 px (silent ground-truth
+    loss on CuvisNEXT image-mode exports). The field is therefore typed ``Any``. These tests
+    pin the passthrough by identity (the v0 union parser returned a copy, so a regression to
+    typed parsing fails here even under the 0.39.x lock), exercise the v1 loader explicitly,
+    and check that an unrecognized payload fails loudly instead of silently.
+    """
+
+    HEIGHT, WIDTH = 10, 12
+
+    def _raw_ann(self, segmentation):
+        return {
+            "id": 8,
+            "image_id": 0,
+            "category_id": 3,
+            "area": 12.0,
+            "iscrowd": 1,
+            "segmentation": segmentation,
+        }
+
+    def _rle(self):
+        from cuvis_ai_core.data.rle import coco_rle_encode
+
+        seg = coco_rle_encode(_rect_mask(self.HEIGHT, self.WIDTH, 2, 5, 3, 7))
+        assert isinstance(seg["counts"], str)
+        return seg
+
+    def test_from_dict_passes_rle_dict_through_by_identity(self):
+        seg = self._rle()
+        ann = Annotation.from_dict(self._raw_ann(seg))
+        assert ann.segmentation is seg
+
+    def test_from_list_passes_rle_dict_through_by_identity(self):
+        seg = self._rle()
+        (ann,) = Annotation.from_list([self._raw_ann(seg)])
+        assert ann.segmentation is seg
+
+    def test_from_dict_passes_polygon_through_by_identity(self):
+        poly = [[3.0, 2.0, 7.0, 2.0, 7.0, 5.0, 3.0, 5.0]]
+        ann = Annotation.from_dict(self._raw_ann(poly))
+        assert ann.segmentation is poly
+
+    def test_v1_loader_preserves_rle_dict(self):
+        """Opt a subclass into the v1 loader (the 1.x default) and check the RLE object survives.
+
+        ``fromdict`` / ``fromlist`` are called directly instead of the inherited classmethods:
+        once the base ``Annotation.from_dict`` has run, dataclass-wizard rebinds it to the
+        generated v0 loader and a subclass defined afterwards inherits that binding, so the
+        classmethod would exercise the wrong loader. The type checks guard that the subclass's
+        own (v1) loader ran.
+        """
+        from dataclasses import dataclass
+
+        from dataclass_wizard import JSONWizard, fromdict, fromlist
+
+        @dataclass
+        class V1Annotation(Annotation):
+            class _(JSONWizard.Meta):
+                v1 = True
+
+        seg = self._rle()
+        ann = fromdict(V1Annotation, self._raw_ann(seg))
+        assert type(ann) is V1Annotation
+        assert ann.segmentation is seg
+        (listed,) = fromlist(V1Annotation, [self._raw_ann(seg)])
+        assert type(listed) is V1Annotation
+        assert listed.segmentation is seg
+
+    def test_from_dict_rle_dict_rasterizes(self):
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+        ann = Annotation.from_dict(self._raw_ann(self._rle()))
+        mask = create_mask([ann], self.HEIGHT, self.WIDTH)
+        assert int((mask == 3).sum()) == 12
+        assert (mask[2:5, 3:7] == 3).all()
+
+    def test_create_mask_raises_on_unrecognized_segmentation(self):
+        from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+        mangled = Annotation(id=8, image_id=0, category_id=3, segmentation=["counts", "size"])
+        with pytest.raises(ValueError, match="unsupported 'segmentation' payload"):
+            create_mask([mangled], self.HEIGHT, self.WIDTH)
