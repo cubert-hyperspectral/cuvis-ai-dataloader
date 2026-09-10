@@ -63,9 +63,17 @@ cu3s-to-npz = "cuvis_ai_dataloader.scripts.convert_cu3s_to_npz:cu3s_to_npz_cli"
 [project.optional-dependencies]
 # Per-format heavy deps. The orchestrator composer installs the union of extras
 # a run actually activates, so a tiff_paired child env never pulls `cuvis`.
-cu3s = ["cuvis>=3.5.0", "cuvis-il<3.5.4; sys_platform == 'win32'"]
+# `cuvis-il` is a transitive dep of `cuvis`, but it is named here too: uv only enables
+# pre-releases for a package a *direct* requirement mentions one for, so without this line
+# the 3.6.0 release candidate does not resolve. Drop both pre-release suffixes on 3.6.0 final.
+# rc2 is the floor rather than rc1 because rc1's device-buffer path is broken end to end
+# (cuvis.python#98); the binding is unchanged, so it stays at its own rc1.
+cu3s = ["cuvis>=3.6.0.0rc2", "cuvis-il>=3.6.0.0rc1"]
 coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1,<1.0"]
 tiff = ["tifffile>=2024.5.0"]
+# Benchmark-only. The evidence scripts under benchmarks/ are not part of the package or CI,
+# but they are the source of the numbers in the README, so their deps are pinned here.
+bench = ["matplotlib>=3.8", "psutil>=5.9"]
 all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
 dev = [
     "cuvis-ai-dataloader[all]",

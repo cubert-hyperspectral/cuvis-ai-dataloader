@@ -64,22 +64,25 @@ Extras:
 - `coco`: COCO-JSON mask labels (`pycocotools`, `scikit-image`)
 - `tiff`: TIFF cube reading (`tifffile`)
 - `all`: All formats
+- `bench`: Plotting and process-memory deps for the scripts under `benchmarks/`
 - `dev`: Development dependencies
 
-The `cu3s` extra carries the Windows `cuvis-il<3.5.3` pin (the last build with a
-`win_amd64` wheel).
+The `cu3s` extra requires `cuvis` 3.6.0, currently its release candidate.
+`cuvis-il` is named alongside it even though `cuvis` already depends on it, because uv only
+enables pre-releases for a package a direct requirement mentions one for.
+Both pins lose their `.0rc1` suffix on 3.6.0 final.
 
 ### Cuvis SDK (system install, required for `cu3s`)
 
-The `[cu3s]` extra installs the `cuvis` **binding** (with the Windows `cuvis-il<3.5.3` pin noted
-above), but that binding needs the system-wide **C++ Cuvis SDK** too, or any `.cu3s` read fails at
-runtime. See the
+The `[cu3s]` extra installs the `cuvis` **binding**, but that binding needs the system-wide
+**C++ Cuvis SDK** at a matching version (3.6.0) too, or any `.cu3s` read fails at import with
+`DLL load failed while importing _cuvis_pyil`. See the
 [Cuvis.AI installation guide](https://docs.cuvis.ai/latest/get-started/installation/) for OS
 support (Windows / Linux; not macOS), the SDK download, and verification. Quick check once
 installed:
 
 ```bash
-uv run python -c "import cuvis; print(cuvis.__version__)"
+uv run python -c "import cuvis; print(cuvis.version())"
 ```
 
 ## Usage
@@ -128,8 +131,8 @@ Predictor(pipeline, dm).predict()
 
 ### Threaded cu3s reading (`read_threads`)
 
-Reading a cu3s frame is dominated by the SDK, not by Python: about 58 ms of disk load plus
-33 ms of processing per cube.
+Reading a cu3s frame is dominated by the SDK, not by Python: about 68 ms per cube on a warm
+file cache, almost none of it under the interpreter.
 `read_threads` reads a batch on several `SessionFile` handles at once, all sharing one
 `ProcessingContext`, which is the only topology measured to produce correct cubes.
 It is off by default.
@@ -144,33 +147,45 @@ data:
     read_threads: 6
 ```
 
-Measured on one 940-frame session, GPU Raw mode, 20 cores and an RTX 4070:
+Measured on one 940-frame session, CUDA Raw mode, 20 cores and an RTX 4070, SDK 3.6.0, median of
+five passes per cell ([full evidence](benchmarks/threaded_reading/report.md)):
 
-| read_threads | fps |
-| --- | --- |
-| 1 | 15.1 |
-| 2 | 26.3 |
-| 4 | 44.6 |
-| 6 | 55.1 |
-| 20 | 70.2 |
+| read_threads | fps | RSS GB |
+| --- | --- | --- |
+| 1 | 14.8 | 2.7 |
+| 2 | 28.7 | 4.5 |
+| 4 | 44.4 | 5.2 |
+| 6 | 54.5 | 5.7 |
+| 8 | 55.6 | 6.3 |
+| 16 | 58.3 | 8.5 |
 
-Six is the knee: it reaches 78% of the ceiling, and going to 20 buys 27% more throughput for
-2.7x the memory.
-Budget roughly 0.35 GB of RSS per handle.
+Six is the knee: it reaches 94% of the sixteen-thread throughput for 68% of its memory, and
+eight buys only another 2%. Budget roughly 0.38 GB of RSS per handle.
 
 Things worth knowing before turning it on:
 
-- **It needs a cuvis binding that releases the GIL.** No published wheel carries that yet. On a
-  binding that holds it, extra threads are a small loss rather than a gain, so the reader probes
-  the binding once per process and falls back to single-threaded reads with a warning.
+- **The SDK must be processing on the GPU, and on 3.6.0 that is not the default.** A process that
+  never calls `cuvis.init` processes on the host, where a cube costs about 260 ms instead of 67 ms
+  and extra threads buy almost nothing (1.1x at eight). Until this package initializes the SDK
+  itself, force it in the host application before constructing a DataModule:
+
+  ```python
+  import cuvis
+  cuvis.init(cuvis.SdkSettings(force_gpu_mode="cuda"))
+  ```
+
+- **It needs a cuvis binding that releases the GIL.** The published `cuvis-il` 3.6.0 wheels do;
+  every wheel before them held it. On a binding that holds it, extra threads are a small loss
+  rather than a gain, so the reader probes the binding once per process and falls back to
+  single-threaded reads with a warning.
 - **Concurrency equals `batch_size`.** torch hands a dataset a whole batch of indices at once and
   nothing earlier, so `batch_size: 1` gets no speedup however high `read_threads` is.
 - **`num_workers` must be 0.** Worker processes each build their own sessions and their own
   processing context, so combining the two multiplies both; the module raises instead.
 - **`samples_per_frame > 1` disables it for the train loader only.** The repeat wrapper in
   `cuvis-ai-core` does not forward the batched fetch. Validation, test and predict are unaffected.
-- **CPU processing mode barely benefits.** There the lever is `processing_thread_count` in
-  `cuvis.settings`, not this parameter.
+- **Host processing mode barely benefits.** There the lever is `processing_thread_count` in
+  the SDK settings, not this parameter.
 - **Multi-file spends the budget across recordings, not inside them.** `read_threads` is divided
   by the number of sessions the dataset holds open, so the handle count stays flat; a multi-file
   epoch is bounded by per-file context builds rather than by reads.
