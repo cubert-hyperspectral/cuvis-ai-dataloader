@@ -1,0 +1,115 @@
+{
+  "session": "D:\\Measurements\\hbf\\Auto_013+01.cu3s",
+  "mode": "Raw",
+  "iters": 24,
+  "repeats": 5,
+  "window": 10,
+  "sdk_version": "CUBERT SDK v. 3.6.0 build: dfcc3e3cea7272d73d07a7f5bf2f26202ec1fc57",
+  "cuvis_wrapper_version": "3.6.0.0rc2 c9da3baa8af4c0b67ff7e7c12cd3113c1934f95a",
+  "rows": [
+    {
+      "device": "host",
+      "threads": 1,
+      "fps": 2.81,
+      "setup_s": 13.06,
+      "fps_runs": [
+        2.96,
+        2.88,
+        2.81,
+        2.75,
+        2.81
+      ]
+    },
+    {
+      "device": "host",
+      "threads": 2,
+      "fps": 3.23,
+      "setup_s": 13.91,
+      "fps_runs": [
+        3.23,
+        3.24,
+        3.15,
+        3.25,
+        3.06
+      ]
+    },
+    {
+      "device": "host",
+      "threads": 4,
+      "fps": 3.41,
+      "setup_s": 12.76,
+      "fps_runs": [
+        3.35,
+        3.41,
+        3.46,
+        3.46,
+        3.4
+      ]
+    },
+    {
+      "device": "host",
+      "threads": 8,
+      "fps": 3.34,
+      "setup_s": 12.77,
+      "fps_runs": [
+        3.26,
+        3.39,
+        3.44,
+        3.34,
+        3.3
+      ]
+    },
+    {
+      "device": "cuda",
+      "threads": 1,
+      "fps": 16.1,
+      "setup_s": 12.65,
+      "fps_runs": [
+        16.1,
+        17.03,
+        17.03,
+        14.88,
+        14.63
+      ]
+    },
+    {
+      "device": "cuda",
+      "threads": 2,
+      "fps": 28.01,
+      "setup_s": 12.8,
+      "fps_runs": [
+        30.5,
+        28.07,
+        27.54,
+        28.01,
+        27.8
+      ]
+    },
+    {
+      "device": "cuda",
+      "threads": 4,
+      "fps": 43.64,
+      "setup_s": 12.59,
+      "fps_runs": [
+        45.96,
+        42.74,
+        43.64,
+        42.35,
+        44.76
+      ]
+    },
+    {
+      "device": "cuda",
+      "threads": 8,
+      "fps": 51.76,
+      "setup_s": 12.27,
+      "fps_runs": [
+        47.46,
+        51.76,
+        53.84,
+        48.02,
+        52.65
+      ]
+    }
+  ]
+}

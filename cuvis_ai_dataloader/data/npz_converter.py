@@ -114,6 +114,7 @@ def convert_cu3s_file(
     compress: bool = True,
     resume: bool = False,
     read_threads: int = 0,
+    sdk_cuda: bool = True,
 ) -> list[dict[str, Any]]:
     """Convert one ``.cu3s`` to per-frame ``.npz`` files; return index records (no split).
 
@@ -183,6 +184,7 @@ def convert_cu3s_file(
     with open_reader(
         str(cu3s_path),
         read_threads=read_threads,
+        sdk_cuda=sdk_cuda,
         processing_mode=processing_mode,
         **ref_kwargs,
     ) as reader:
@@ -268,11 +270,13 @@ def convert_cu3s(
     compress: bool = True,
     frame_limit: int | None = None,
     read_threads: int = 0,
+    sdk_cuda: bool = True,
 ) -> list[dict[str, Any]]:
     """Convert many ``.cu3s`` files; optionally write a combined universe CSV. Returns all records.
 
     ``frame_limit`` (if set) converts only the first N frames of each file (for smoke runs).
-    ``read_threads`` is forwarded to every file (see :func:`convert_cu3s_file`).
+    ``read_threads`` and ``sdk_cuda`` are forwarded to every file (see
+    :func:`convert_cu3s_file`).
 
     ``white_ref`` / ``dark_ref`` override the baked references for EVERY input file (see
     :func:`convert_cu3s_file`) — only batch files that share the same day-matched references;
@@ -302,6 +306,7 @@ def convert_cu3s(
                 frame_limit=frame_limit,
                 compress=compress,
                 read_threads=read_threads,
+                sdk_cuda=sdk_cuda,
             )
         )
     if universe_csv is not None:
