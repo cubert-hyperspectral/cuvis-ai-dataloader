@@ -2,71 +2,124 @@
   "session": "D:\\Measurements\\hbf\\Auto_013+01.cu3s",
   "frames_in_session": 940,
   "mode": "Raw",
+  "gpu_mode": "cuda",
+  "sdk_version": "CUBERT SDK v. 3.6.0 build: 987fdcfe60cc096dd23e106cb431dcc777cc8ca7",
+  "cuvis_wrapper_version": "3.6.0.0 0a994f561b394c8c4a32630cc4c14f7e543fcd8e",
   "iters": 24,
+  "repeats": 5,
   "window": 10,
-  "vram_baseline_mib": 1954,
+  "vram_baseline_mib": 1773,
   "scaling": [
     {
       "threads": 1,
-      "fps": 12.96,
+      "fps": 12.85,
       "scaling": 1.0,
-      "setup_s": 8.16,
-      "vram_mib": 1939,
-      "rss_gb": 1.15,
+      "setup_s": 13.46,
+      "fps_runs": [
+        12.05,
+        12.63,
+        12.85,
+        12.93,
+        14.28
+      ],
+      "vram_mib": 1330,
+      "rss_gb": 2.73,
       "wrong_cubes": 0
     },
     {
       "threads": 2,
-      "fps": 27.9,
-      "scaling": 2.15,
-      "setup_s": 7.73,
-      "vram_mib": 2024,
-      "rss_gb": 2.93,
+      "fps": 25.61,
+      "scaling": 1.99,
+      "setup_s": 12.87,
+      "fps_runs": [
+        25.26,
+        25.3,
+        25.61,
+        27.09,
+        27.87
+      ],
+      "vram_mib": 1424,
+      "rss_gb": 4.52,
       "wrong_cubes": 0
     },
     {
       "threads": 4,
-      "fps": 38.22,
-      "scaling": 2.95,
-      "setup_s": 7.95,
-      "vram_mib": 2568,
-      "rss_gb": 3.57,
+      "fps": 40.72,
+      "scaling": 3.17,
+      "setup_s": 12.86,
+      "fps_runs": [
+        35.39,
+        40.2,
+        40.72,
+        41.92,
+        43.76
+      ],
+      "vram_mib": 1615,
+      "rss_gb": 5.16,
       "wrong_cubes": 0
     },
     {
       "threads": 6,
-      "fps": 39.29,
-      "scaling": 3.03,
-      "setup_s": 7.89,
-      "vram_mib": 2690,
-      "rss_gb": 4.13,
+      "fps": 50.7,
+      "scaling": 3.95,
+      "setup_s": 12.72,
+      "fps_runs": [
+        42.5,
+        46.79,
+        50.7,
+        51.39,
+        51.48
+      ],
+      "vram_mib": 1777,
+      "rss_gb": 5.72,
       "wrong_cubes": 0
     },
     {
       "threads": 8,
-      "fps": 43.05,
-      "scaling": 3.32,
-      "setup_s": 7.86,
-      "vram_mib": 2855,
-      "rss_gb": 4.7,
+      "fps": 52.64,
+      "scaling": 4.1,
+      "setup_s": 13.14,
+      "fps_runs": [
+        36.84,
+        52.39,
+        52.64,
+        52.99,
+        53.27
+      ],
+      "vram_mib": 1959,
+      "rss_gb": 6.28,
       "wrong_cubes": 0
     },
     {
       "threads": 12,
-      "fps": 38.73,
-      "scaling": 2.99,
-      "setup_s": 7.8,
-      "vram_mib": 2950,
-      "rss_gb": 5.63,
+      "fps": 47.72,
+      "scaling": 3.71,
+      "setup_s": 12.87,
+      "fps_runs": [
+        37.54,
+        47.63,
+        47.72,
+        53.21,
+        54.09
+      ],
+      "vram_mib": 2197,
+      "rss_gb": 7.41,
       "wrong_cubes": 0
     },
     {
       "threads": 16,
-      "fps": 40.73,
-      "scaling": 3.14,
-      "setup_s": 8.17,
-      "vram_mib": 3143,
-      "rss_gb": 6.69,
+      "fps": 50.06,
+      "scaling": 3.9,
+      "setup_s": 13.24,
+      "fps_runs": [
+        33.84,
+        46.52,
+        50.06,
+        51.23,
+        51.67
+      ],
+      "vram_mib": 2510,
+      "rss_gb": 8.47,
       "wrong_cubes": 0
     }
   ],
@@ -74,32 +127,67 @@
     {
       "batch_size": 1,
       "read_threads": 8,
-      "fps": 15.08,
-      "scaling": 1.16
+      "fps": 16.54,
+      "scaling": 1.29,
+      "fps_runs": [
+        12.51,
+        13.81,
+        16.54,
+        16.84,
+        16.88
+      ]
     },
     {
       "batch_size": 2,
       "read_threads": 8,
-      "fps": 22.55,
-      "scaling": 1.74
+      "fps": 24.94,
+      "scaling": 1.94,
+      "fps_runs": [
+        20.7,
+        22.82,
+        24.94,
+        25.3,
+        25.92
+      ]
     },
     {
       "batch_size": 4,
       "read_threads": 8,
-      "fps": 29.87,
-      "scaling": 2.31
+      "fps": 34.97,
+      "scaling": 2.72,
+      "fps_runs": [
+        31.63,
+        34.49,
+        34.97,
+        35.2,
+        36.02
+      ]
     },
     {
       "batch_size": 6,
       "read_threads": 8,
-      "fps": 35.41,
-      "scaling": 2.73
+      "fps": 42.63,
+      "scaling": 3.32,
+      "fps_runs": [
+        39.22,
+        41.4,
+        42.63,
+        42.74,
+        43.26
+      ]
     },
     {
       "batch_size": 8,
       "read_threads": 8,
-      "fps": 39.55,
-      "scaling": 3.05
+      "fps": 47.08,
+      "scaling": 3.67,
+      "fps_runs": [
+        42.57,
+        43.67,
+        47.08,
+        47.31,
+        49.6
+      ]
     }
   ],
   "releases_gil": true

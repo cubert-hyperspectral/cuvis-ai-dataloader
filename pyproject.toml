@@ -71,6 +71,9 @@ cu3s-to-npz = "cuvis_ai_dataloader.scripts.convert_cu3s_to_npz:cu3s_to_npz_cli"
 cu3s = ["cuvis>=3.6.0", "cuvis-il>=3.6.0,<3.7.0; sys_platform == 'win32'"]
 coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1,<1.0"]
 tiff = ["tifffile>=2024.5.0"]
+# Benchmark-only. The evidence scripts under benchmarks/ are not part of the package or CI,
+# but they are the source of the numbers in the README, so their deps are pinned here.
+bench = ["matplotlib>=3.8", "psutil>=5.9"]
 all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
 dev = [
     "cuvis-ai-dataloader[all]",
