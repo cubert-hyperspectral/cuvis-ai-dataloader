@@ -23,7 +23,7 @@ import numpy as np
 from loguru import logger
 from torch.utils.data import Sampler
 
-from .._extras import cuvis_releases_gil, require_cuvis
+from .._extras import configure_cuvis_sdk, cuvis_releases_gil, require_cuvis
 from .cu3s_reader import Cu3sCubeReader
 
 # Past 12 threads SpectralRadiance fails intermittently even with cuda_host_memory_maximum_gb
@@ -146,14 +146,18 @@ class Cu3sPrefetchReader(Cu3sCubeReader):
 
 
 def open_reader(
-    cu3s_file_path: str, *, read_threads: int = 0, **reader_kwargs: Any
+    cu3s_file_path: str, *, read_threads: int = 0, sdk_cuda: bool = True, **reader_kwargs: Any
 ) -> Cu3sCubeReader:
     """Open a pooled reader when threads are asked for and the binding supports them.
 
     Falls back with a warning rather than raising, because one config has to run both on a
     dev box with a GIL-releasing binding and in CI on a stock one, where extra threads are a
     measured loss rather than a gain.
+
+    The SDK device is chosen here rather than by the caller, because this runs in the
+    DataLoader worker too, and a worker is a fresh process that has initialized nothing.
     """
+    configure_cuvis_sdk(cuda=sdk_cuda)
     if read_threads > MAX_READ_THREADS:
         raise ValueError(f"read_threads must be <= {MAX_READ_THREADS}, got {read_threads}")
     if read_threads < 2:
@@ -190,12 +194,14 @@ class Cu3sReaderCache:
         max_open_sessions: int = 4,
         read_threads: int = 0,
         sources: int = 1,
+        sdk_cuda: bool = True,
     ) -> None:
         if max_open_sessions < 1:
             raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
         if read_threads < 0:
             raise ValueError(f"read_threads must be >= 0, got {read_threads}")
         self._processing_mode = processing_mode
+        self._sdk_cuda = bool(sdk_cuda)
         self._max_open = min(int(max_open_sessions), max(1, int(sources)))
         self._per_file_threads = int(read_threads) // self._max_open
         self._outer_size = min(self._max_open, int(read_threads)) if read_threads else 0
@@ -219,6 +225,7 @@ class Cu3sReaderCache:
             source,
             read_threads=self._per_file_threads,
             processing_mode=self._processing_mode,
+            sdk_cuda=self._sdk_cuda,
         )
         self._readers[source] = reader
         return reader

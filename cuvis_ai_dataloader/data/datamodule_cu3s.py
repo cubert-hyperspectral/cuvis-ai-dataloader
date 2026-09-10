@@ -51,7 +51,13 @@ from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule, DataStage
 from cuvis_ai_core.data.selectors import _norm_source
 from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef, SelectorKind
 
-from ._extras import accepts_data_config, parse_bool, parse_int_list, parse_str_list
+from ._extras import (
+    accepts_data_config,
+    configure_cuvis_sdk,
+    parse_bool,
+    parse_int_list,
+    parse_str_list,
+)
 from .readers.cu3s_pool import Cu3sReaderCache, SourceCoherentBatchSampler
 from .readers.cu3s_reader import Cu3sCubeReader, count_measurements
 
@@ -171,6 +177,7 @@ class _Cu3sRefDataset(Dataset):
         *,
         max_open_sessions: int = 4,
         read_threads: int = 0,
+        sdk_cuda: bool = True,
     ) -> None:
         self._refs = refs
         self._processing_mode = processing_mode
@@ -179,6 +186,7 @@ class _Cu3sRefDataset(Dataset):
             max_open_sessions=max_open_sessions,
             read_threads=read_threads,
             sources=len({ref.source for ref in refs}) or 1,
+            sdk_cuda=sdk_cuda,
         )
         self._labelers: dict[str, Any] = {}
 
@@ -310,6 +318,9 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         # epoch stops evicting readers mid-batch. Changes which samples share a batch, and
         # replaces the loader's sampler, so it is off by default and unusable under DDP.
         source_coherent_batches: bool = False,
+        # Process cubes on the GPU. Off means the SDK's 'host' mode, roughly 4x slower per
+        # cube. On a machine without CUDA the SDK falls back to the host on its own.
+        sdk_cuda: Any = True,
     ) -> None:
         super().__init__(
             splits=splits,
@@ -351,6 +362,10 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         if self.read_threads < 0:
             raise ValueError(f"read_threads must be >= 0, got {read_threads}")
         self.source_coherent_batches = bool(source_coherent_batches)
+        self.sdk_cuda = parse_bool(sdk_cuda, key="sdk_cuda")
+        # Recorded before anything can open a session, since the SDK fixes its device at the
+        # first init of a process and ignores every later one.
+        configure_cuvis_sdk(cuda=self.sdk_cuda)
         # Process workers each build their own sessions and their own ProcessingContext, so
         # combining them multiplies both the handle count and the ~9 s context build. The
         # failure mode is an OOM or a killed CUDA process, not a slowdown, so refuse instead
@@ -634,6 +649,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             self.processing_mode,
             max_open_sessions=self.max_open_sessions,
             read_threads=self.read_threads,
+            sdk_cuda=self.sdk_cuda,
         )
 
     def category_name_to_id(self) -> dict[str, int] | None:

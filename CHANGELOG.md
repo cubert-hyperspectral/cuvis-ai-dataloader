@@ -3,6 +3,30 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.8.0 - 2026-09-12
+
+- **`sdk_cuda` selects the device the cuvis SDK processes on**, defaulting to the GPU. Available
+  on both cu3s DataModules, on `convert_cu3s_file` / `convert_cu3s` and as `--no-sdk-cuda` on
+  `cu3s-to-npz`. This closes the known limitation noted in 0.7.0: SDK 3.6.0 processes on the host
+  unless a process calls `cuvis.init`, and nothing here called it, so 0.7.0 on its own moved every
+  cu3s read onto the CPU. Measured on one 940-frame `Raw` session: the GPU is **5.4x** faster
+  single-threaded (16.8 against 3.1 cubes/s) and **13.5x** at eight reader threads. Evidence:
+  `benchmarks/sdk_device/report.md`.
+- **`read_threads` is a GPU-only lever.** On the host the whole 1-to-8 sweep stays flat at about
+  3 cubes/s, against 2.9x on the GPU, so the two parameters are not independent. Documented
+  rather than enforced, since a host-only machine is a legitimate configuration.
+- **The device does not meaningfully change the cube.** Verified per element against the real SDK:
+  the two implementations disagree by one LSB on 0.0001% of elements and by no more than one LSB
+  anywhere, which is rounding in the cubalize interpolation.
+- `require_cuvis` now performs the SDK init, once per process, because it is the one call every
+  SDK entry in this package already goes through -- including inside a DataLoader worker, which is
+  a fresh process that has initialized nothing. `Cu3sReaderCache` carries the choice across the
+  pickle boundary so a worker reopens on the right device.
+- **The first `cuvis.init` of a process wins.** The SDK fixes its device there and silently ignores
+  every later one, returning success either way, so a host application that already initialized the
+  SDK keeps its own choice and a second, conflicting `sdk_cuda` warns instead of pretending to
+  switch. A machine without CUDA is unaffected: the SDK falls back to the host by itself.
+
 ## 0.7.0 - 2026-09-12
 
 - **Threaded cu3s reading (`read_threads`).** A batch is read on several `cuvis.SessionFile`
