@@ -29,7 +29,7 @@ from cuvis_ai_schemas.training.data import SampleRef
 
 from ._extras import accepts_data_config
 from ._universe import parse_universe, validate_universe_csv_param
-from .readers.cu3s_reader import Cu3sCubeReader
+from .readers.cu3s_reader import Cu3sCubeReader, count_measurements
 
 
 class _MultiCu3sDataset(Dataset):
@@ -234,10 +234,8 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             path = rec["materialized_path"]
             max_by_path[path] = max(max_by_path.get(path, -1), index)
         for path, max_idx in max_by_path.items():
-            reader = Cu3sCubeReader(path, processing_mode=self._processing_mode)
-            try:
-                total = reader.total_measurements
-            finally:
-                reader.close()
+            # The count is all this check needs; a full reader would also build a
+            # ProcessingContext and read measurement 0, per distinct recording.
+            total = count_measurements(path)
             if max_idx >= total:
                 raise ValueError(f"row read index {max_idx} >= {total} measurements in {path}")

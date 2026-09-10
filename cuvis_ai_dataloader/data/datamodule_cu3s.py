@@ -16,6 +16,19 @@ Folder mode with ``frames="measurements"`` is the contract for externally author
 The module does not own split semantics: training stages without ``DataConfig.splits``
 are refused (see ``setup``), so statistical initialization can never silently ingest the
 whole universe.
+
+Which recordings folder mode looks at is decided once, by ``_folder_files()``: an explicit
+``files`` list if the caller passed one, else the sources the split's selectors name if
+every selector names them, else the folder walk. So a folder holding recordings the split
+does not use costs nothing, and ``recursive`` governs the walk alone. Two consequences
+worth knowing:
+
+* ``SampleRef.source`` keeps the spelling each mode has always emitted -- canonical posix
+  for ``frames="measurements"``, the path as given for ``frames="file"`` -- because
+  ``resolve-splits`` writes its selectors from these strings, and a relative ``data_dir``
+  must keep yielding relative sources.
+* an empty ``predict`` stage still means "the whole universe", which now means the
+  recordings the split names rather than everything under ``data_dir``.
 """
 
 from __future__ import annotations
@@ -23,16 +36,106 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 import numpy as np
 from torch.utils.data import Dataset
 
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule, DataStage
-from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef
 
-from ._extras import accepts_data_config, parse_bool, parse_int_list
-from .readers.cu3s_reader import Cu3sCubeReader
+# The one path-spelling rule the ecosystem shares: the GUI's split designer, core's
+# selector resolver and this module must agree on when two spellings name one file
+# (separator style, drive-letter case), or a Windows-authored splits.json selects
+# nothing. Private in core 0.17.1 and read from there deliberately rather than copied,
+# so a comparison can never drift from the resolver's; it moves to a public
+# ``norm_source`` on core's next release and this import follows it.
+from cuvis_ai_core.data.selectors import _norm_source
+from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef, SelectorKind
+
+from ._extras import accepts_data_config, parse_bool, parse_int_list, parse_str_list
+from .readers.cu3s_reader import Cu3sCubeReader, count_measurements
+
+#: Selector kinds that name their sources outright. Everything else (``all``,
+#: ``dir_indices``, ``stems``, ``glob``, ``tag``, ``categories``) is answered only by
+#: the full universe, so a split using one of them keeps the folder walk.
+_SOURCE_NAMING_KINDS = frozenset({SelectorKind.FILES, SelectorKind.FILE_INDICES})
+_SET_OP_KINDS = frozenset({SelectorKind.UNION, SelectorKind.EXCEPT, SelectorKind.INTERSECT})
+
+
+class ExplicitSources(NamedTuple):
+    """The sources a split names, split by whether they have to exist.
+
+    ``required`` comes from a stage's own selectors: core raises "matched 0 samples"
+    when one of those resolves to nothing, so a missing file is a hard error and is
+    better reported by name, up front. ``optional`` comes from inside a set operation,
+    where core resolves each child without that check on purpose, so
+    ``except(files[a], files[gone])`` is a legitimate split that must keep working.
+    """
+
+    required: frozenset[str]
+    optional: frozenset[str]
+
+    @property
+    def named(self) -> frozenset[str]:
+        """Every source the split mentions, required or not."""
+        return self.required | self.optional
+
+
+def explicit_sources(splits: DataSplitConfig | None) -> ExplicitSources | None:
+    """Which recordings a split names, or ``None`` when it needs the whole universe.
+
+    This is what lets a folder-sourced module open only the recordings a split actually
+    uses. It is a pure read of the selector tree: ``file_indices`` contributes its
+    ``source``, ``files`` contributes its ``paths``, the set operations contribute their
+    children's, and any positional or attribute-driven selector (``dir_indices``,
+    ``stems``, ``glob``, ``tag``, ``categories``, ``all``) means the answer can only come
+    from enumerating everything, so the walk stays.
+    """
+    if splits is None:
+        return None
+    required: set[str] = set()
+    optional: set[str] = set()
+
+    def visit(sel: Any, *, into: set[str]) -> bool:
+        """Collect one selector's sources; ``False`` means the whole universe is needed."""
+        if sel.kind in _SOURCE_NAMING_KINDS:
+            if sel.kind == SelectorKind.FILE_INDICES:
+                if not sel.source:
+                    return False
+                into.add(sel.source)
+            else:
+                if not sel.paths:
+                    return False
+                into.update(sel.paths)
+            return True
+        if sel.kind in _SET_OP_KINDS:
+            # A set operation's children resolve without the zero-match check, so
+            # nothing they name is required to exist.
+            return all(visit(child, into=optional) for child in sel.of)
+        return False
+
+    stages = (splits.train, splits.val, splits.test, splits.predict)
+    for stage in stages:
+        for sel in stage:
+            if not visit(sel, into=required):
+                return None
+    result = ExplicitSources(frozenset(required), frozenset(optional - required))
+    return result if result.named else None
+
+
+def _dedupe_by_spelling(paths: Any) -> list[Path]:
+    """One entry per file, keeping the first spelling seen, ordered by that spelling.
+
+    Two selectors can name one recording differently (a hand-typed row and a scanned one
+    differ in drive-letter case on Windows; a legacy row differs in separator), and
+    opening it twice would put the same measurements in the universe twice. Comparison
+    goes through the shared rule; the surviving path keeps the spelling it arrived with.
+    """
+    seen: dict[str, Path] = {}
+    for path in paths:
+        key = _norm_source(str(Path(path).resolve()))
+        seen.setdefault(key, Path(path))
+    return [seen[key] for key in sorted(seen)]
 
 
 def _sibling_json(annotation_json_path, cu3s_file_path) -> str | None:
@@ -163,6 +266,13 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         # Folder source: a data_dir (no single file) lists *.cu3s into one ordered universe;
         # selectors then index into it.
         data_dir: str | None = None,
+        # Explicit source list: the recordings to enumerate, in place of walking
+        # ``data_dir``. The caller that already knows which files its split uses (the
+        # CuvisNEXT training wizard does) passes them here, so the universe never
+        # contains a recording nobody asked for. Accepts a list or a comma string
+        # (``--data-arg files=a.cu3s,b.cu3s``); an empty list counts as "not given", so a
+        # trainrun preset can ship ``files: []`` as a placeholder and still fall back.
+        files: Any = None,
         # Folder-mode granularity: "file" = one sample per file at measurement 0 (legacy
         # default); "measurements" = one sample per measurement with canonical absolute
         # sources (the GUI-authored-splits contract). Single-file mode is always
@@ -184,8 +294,14 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
 
         self.cu3s_file_path = str(cu3s_file_path) if cu3s_file_path else None
         self.data_dir = Path(data_dir) if (self.cu3s_file_path is None and data_dir) else None
+        self.files: list[str] | None = (
+            parse_str_list(files, key="files") if (self.cu3s_file_path is None and files) else None
+        )
         # Folder mode reads *.cu3s; kept as a list so _list_folder_files stays generic.
         self.cu3s_globs: list[str] | None = ["cu3s"] if self.data_dir is not None else None
+        # Answered once per instance by _folder_files(); every later caller reuses it, so a
+        # constructed universe never depends on when it was asked for.
+        self._folder_files_cache: list[Path] | None = None
         frames = str(frames or "file")
         if frames not in ("file", "measurements"):
             raise ValueError(f"frames must be 'file' or 'measurements', got {frames!r}")
@@ -209,22 +325,38 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
 
     @staticmethod
     def validate_params(params: dict[str, Any]) -> None:
-        """Validate cu3s params: a file (or folder) source exists and any annotation is JSON."""
+        """Validate cu3s params: a file, file list or folder source exists; annotations are JSON.
+
+        With an explicit ``files`` list the folder is not consulted at all. That is not
+        only cheaper: ``data_dir`` may legitimately be a filesystem root (CuvisNEXT sends
+        the deepest folder containing every assigned recording, which for a split spanning
+        two drives is a drive root), and the folder check walks until it meets its first
+        ``*.cu3s``, recursively when asked to. Validating the list the caller actually
+        named avoids walking a whole volume to prove a file exists that we were handed.
+        """
         cu3s = params.get("cu3s_file_path")
         data_dir = params.get("data_dir")
+        raw_files = params.get("files")
+        files = parse_str_list(raw_files, key="files") if raw_files else None
         frames = params.get("frames", "file")
         if frames not in ("file", "measurements"):
             raise ValueError(f"frames must be 'file' or 'measurements', got {frames!r}")
-        if not cu3s and not data_dir:
+        if not cu3s and not data_dir and not files:
             raise ValueError(
-                "cu3s requires 'cu3s_file_path', or 'data_dir' (a folder of .cu3s files), "
-                "in params."
+                "cu3s requires 'cu3s_file_path', 'files' (explicit .cu3s paths), or "
+                "'data_dir' (a folder of .cu3s files), in params."
             )
         if cu3s:
             if not str(cu3s).endswith(".cu3s"):
                 raise ValueError(f"cu3s_file_path must end with .cu3s: {cu3s!r}")
             if not os.path.exists(cu3s):
                 raise ValueError(f"cu3s_file_path does not exist: {cu3s}")
+        elif files:
+            for entry in files:
+                if not str(entry).endswith(".cu3s"):
+                    raise ValueError(f"files entries must end with .cu3s: {entry!r}")
+                if not os.path.isfile(entry):
+                    raise ValueError(f"files entry does not exist: {entry}")
         else:
             folder = Path(data_dir)
             if not folder.is_dir():
@@ -268,12 +400,78 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             return
         super().setup(stage)
 
-    # -- selector contract -----------------------------------------------------
+    # -- which recordings this module looks at ---------------------------------
+    @property
+    def _folder_mode(self) -> bool:
+        """True when the universe comes from a file list or a folder, not one recording."""
+        return self.files is not None or self.data_dir is not None
+
+    def _folder_files(self) -> list[Path]:
+        """The recordings this module enumerates, in one place, computed once.
+
+        Three answers, in order of how much the caller told us:
+
+        1. ``files`` given: exactly those, and nothing is walked. The caller knows its
+           split; a containment check against ``data_dir`` would only get in the way,
+           since a split may legitimately span drives.
+        2. No ``files``, but every selector in the split names its sources: those, so a
+           ``restore-trainrun`` over a folder opens the split's recordings and no others.
+           Sources from a stage's own selectors must exist and must sit under
+           ``data_dir``; sources reached through a set operation may be absent, because
+           core resolves those without its zero-match check.
+        3. Otherwise the folder walk, unchanged: a positional or attribute-driven
+           selector (``dir_indices``, ``stems``, ``glob``, ``tag``, ``categories``) can
+           only be answered against the whole universe.
+
+        Paths come back spelled the way they were given. ``enumerate()`` derives
+        ``SampleRef.source`` from them per mode (canonical posix for
+        ``frames="measurements"``, verbatim for ``frames="file"``), and resolving here
+        would rewrite a relative source into an absolute one, which is exactly what
+        ``resolve-splits`` wrote its selectors against.
+        """
+        if self._folder_files_cache is None:
+            self._folder_files_cache = self._resolve_folder_files()
+        return self._folder_files_cache
+
+    def _resolve_folder_files(self) -> list[Path]:
+        if self.files is not None:
+            return _dedupe_by_spelling(Path(f) for f in self.files)
+        named = explicit_sources(self._effective_splits() if self.splits else None)
+        if named is not None:
+            return self._named_source_files(named)
+        return self._list_folder_files()
+
+    def _named_source_files(self, named: ExplicitSources) -> list[Path]:
+        """Turn the sources a split names into a file list, reporting what is missing."""
+        root = self.data_dir.resolve() if self.data_dir is not None else None
+        kept: list[Path] = []
+        for source in sorted(named.named):
+            path = Path(source)
+            required = source in named.required
+            if not path.is_file():
+                if required:
+                    raise ValueError(f"the split names a recording that is not a file: {source}")
+                continue  # a set operation may name a file that is gone
+            if root is not None and not path.resolve().is_relative_to(root):
+                if required:
+                    raise ValueError(
+                        f"the split names {source}, which is outside data_dir {self.data_dir}"
+                    )
+                continue
+            kept.append(path)
+        if not kept:
+            raise FileNotFoundError(
+                f"none of the {len(named.named)} recordings the split names could be read"
+            )
+        return _dedupe_by_spelling(kept)
+
     def _list_folder_files(self) -> list[Path]:
         """Sorted, de-duplicated list of ``.cu3s`` files in the source folder.
 
         ``recursive=True`` walks subfolders (``rglob``), e.g. a dataset root holding
-        per-day session folders.
+        per-day session folders. Reached only when neither an explicit ``files`` list nor
+        a fully source-naming split narrowed the universe first (see ``_folder_files``),
+        so ``recursive`` governs this fallback alone.
         """
         files: list[Path] = []
         find = self.data_dir.rglob if self.recursive else self.data_dir.glob
@@ -313,16 +511,12 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         never requires references in the file.
         """
         refs: list[SampleRef] = []
-        if self.data_dir is not None:
-            for path in self._list_folder_files():
+        if self._folder_mode:
+            for path in self._folder_files():
                 if self.frames == "measurements":
                     source = path.resolve().as_posix()
                     annotation = _sibling_json(None, source)
-                    reader = Cu3sCubeReader(source, processing_mode=None)
-                    try:
-                        total = int(reader.total_measurements)
-                    finally:
-                        reader.close()
+                    total = count_measurements(source)
                     for m in range(total):
                         tags, cats = self._attrs_for(annotation, m, required_attrs)
                         refs.append(
@@ -386,8 +580,8 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
     def category_name_to_id(self) -> dict[str, int] | None:
         """Map COCO category names to ids (from the annotation), or None when unlabeled."""
         annotation = self.annotation_json_path
-        if annotation is None and self.data_dir is not None:
-            files = self._list_folder_files()
+        if annotation is None and self._folder_mode:
+            files = self._folder_files()
             annotation = _sibling_json(None, str(files[0])) if files else None
         if not annotation:
             return None

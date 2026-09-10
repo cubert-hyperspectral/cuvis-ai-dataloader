@@ -187,21 +187,37 @@ data:
   splits:
     splits_path: <absolute path to the frozen splits.json>
   params:
+    files:                   # the recordings to use, when the author knows them
+      - <absolute path to a .cu3s>
     data_dir: <folder holding the .cu3s files>
     frames: measurements
-    recursive: true          # walk per-day subfolders
+    recursive: true          # walk per-day subfolders (fallback only)
     processing_mode: Reflectance
 ```
 
 The frozen rules both sides implement:
 
-- **Universe** = every `*.cu3s` under `data_dir` (recursive when `recursive: true`),
-  one sample per measurement `0..N-1`, ordered by `(source, index)`.
+- **Universe** = the recordings the run actually uses, one sample per measurement
+  `0..N-1`, ordered by `(source, index)`. Which recordings those are is answered in this
+  order: the `files` list when given (nothing is walked, and the list may point outside
+  `data_dir`, e.g. a split spanning two drives); otherwise the sources the split's
+  selectors name, when every selector names its sources (`files` / `file_indices`, or set
+  operations over those); otherwise every `*.cu3s` under `data_dir`, recursive when
+  `recursive: true`. A positional or attribute-driven selector (`dir_indices`, `stems`,
+  `glob`, `tag`, `categories`, `all`) can only be answered by the full universe, so it
+  keeps the walk. Enumeration opens each recording once for its measurement count only
+  (no processing context), so a folder holding recordings the split does not name costs
+  nothing.
 - **Source identity is canonical**: the absolute path with forward slashes and
   filesystem-true case — Python `Path(p).resolve().as_posix()`, C++/Qt
   `QFileInfo::canonicalFilePath()`. Selectors in the authored `splits.json` must carry
-  exactly this form; matching is string equality, so a moved or renamed member file
-  fails loud with "matched 0 samples" rather than silently shrinking a split.
+  exactly this form; a moved or renamed member file fails loud, naming the recording it
+  could not read, rather than silently shrinking a split. Sources reached only through a
+  set operation may be absent (`except(files[a], files[gone])` is legitimate, and core
+  resolves a set operation's operands without its zero-match check).
+- **An empty `predict` stage** serves the whole universe, which with an explicit `files`
+  list or a fully source-naming split means the recordings that split uses, not the
+  whole folder.
 - **`uid` = `<source>#<index>`** (the sibling COCO image id equals the read position, so
   it never extends the uid). `universe_hash` = sha256 over the ordered uids, each
   followed by `\n` (`cuvis_ai_core.data.splits_io.universe_hash`). For `file_indices`

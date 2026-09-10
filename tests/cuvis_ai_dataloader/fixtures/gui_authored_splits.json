@@ -1,6 +1,6 @@
 {
   "splits_path": null,
-  "leakage_check": "error",
+  "constraints": [{ "kind": "no_split_overlap", "severity": "error" }],
   "universe_hash": "cecbeb06efa14c0d406421ea31eba1c56d806318297c2f886a454ed83a07ab73",
   "train": [
     { "kind": "file_indices", "source": "{DATA_DIR}/day2/a.cu3s", "ids": [0, "2-4"] },

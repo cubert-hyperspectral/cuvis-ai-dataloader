@@ -71,6 +71,34 @@ def test_unknown_processing_mode_raises(mock_cuvis_sdk, tmp_path):
         Cu3sCubeReader(_make_cu3s(tmp_path), processing_mode="Reflectence")
 
 
+def test_count_measurements_opens_one_bare_session(mock_cuvis_sdk, tmp_path):
+    """The enumeration probe asks the handle for its size and nothing else.
+
+    A full Cu3sCubeReader would also build a ProcessingContext (SDK GPU processing pools)
+    and read measurement 0, per file, which is what made enumerating a folder expensive.
+    """
+    import sys
+
+    from cuvis_ai_dataloader.data.readers.cu3s_reader import count_measurements
+
+    path = _make_cu3s(tmp_path)
+    assert count_measurements(path) == 7
+    assert sys.modules["cuvis"].SessionFile.call_count == 1
+    assert sys.modules["cuvis"].ProcessingContext.call_count == 0
+
+
+def test_count_measurements_names_the_recording_it_could_not_open(mock_cuvis_sdk, tmp_path):
+    """The SDK raises without the path in it, which is useless across a whole split."""
+    import sys
+
+    from cuvis_ai_dataloader.data.readers.cu3s_reader import count_measurements
+
+    path = _make_cu3s(tmp_path, name="broken.cu3s")
+    sys.modules["cuvis"].SessionFile.side_effect = RuntimeError("SDKException")
+    with pytest.raises(ValueError, match="cannot open cu3s .*broken.cu3s"):
+        count_measurements(path)
+
+
 def test_predict_iterates_all_measurements(mock_cuvis_sdk, tmp_path):
     dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), batch_size=1)
     dm.setup(stage="predict")

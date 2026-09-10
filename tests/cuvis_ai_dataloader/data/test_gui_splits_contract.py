@@ -75,7 +75,12 @@ def _pairs(ds, data_dir: str) -> set[tuple[str, int]]:
 def test_fixture_is_schema_valid():
     # The tokenized fixture itself must parse as a DataSplitConfig (source is opaque).
     cfg = DataSplitConfig.model_validate(json.loads(FIXTURE.read_text(encoding="utf-8")))
-    assert cfg.leakage_check == "error"
+    # Leakage is a typed constraint now, not a top-level flag; the GUI writes this
+    # exact entry (cuvis-next split_logic serializer) and rejects a legacy
+    # leakage_check file as an unknown key.
+    assert [(c.kind.value, c.severity.value) for c in cfg.constraints] == [
+        ("no_split_overlap", "error")
+    ]
     assert cfg.predict == []
 
 
@@ -144,20 +149,28 @@ def test_train_dataloader_serves_exactly_the_frozen_train_split(mock_cuvis_sdk, 
 
 
 def test_overlap_raises_leakage(mock_cuvis_sdk, tmp_path):
+    # Enforcement moved from a top-level flag to the typed no_split_overlap constraint
+    # the fixture (and the GUI) declares, so the refusal names the constraint.
     splits_path, data_dir = _write_substituted(tmp_path)
     doc = json.loads(Path(splits_path).read_text(encoding="utf-8"))
     doc["val"][0]["ids"].append(0)  # a#0 is already in train
     Path(splits_path).write_text(json.dumps(doc), encoding="utf-8")
     dm = _module(splits_path, data_dir)
-    with pytest.raises(Exception, match="leakage"):
+    with pytest.raises(Exception, match="no_split_overlap violated"):
         dm.setup(stage="fit")
 
 
 def test_moved_file_fails_loud(mock_cuvis_sdk, tmp_path):
-    # A renamed/moved member cu3s must fail resolution, not silently shrink a split.
+    """A renamed or moved member cu3s must fail resolution, not silently shrink a split.
+
+    It now fails by name. The module builds its universe from the sources the split
+    names, so a missing one is caught before enumeration with the path in the message;
+    previously the file simply never appeared in the walked universe and the failure
+    surfaced downstream as core's anonymous "selector matched 0 samples".
+    """
     splits_path, data_dir = _write_substituted(tmp_path)
     root = Path(data_dir)
     (root / "day3" / "b.cu3s").rename(root / "day3" / "renamed.cu3s")
     dm = _module(splits_path, data_dir)
-    with pytest.raises(ValueError, match="matched 0 samples"):
+    with pytest.raises(ValueError, match=r"names a recording that is not a file.*b\.cu3s"):
         dm.setup(stage="fit")
