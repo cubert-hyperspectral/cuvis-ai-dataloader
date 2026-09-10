@@ -162,16 +162,9 @@ handle, and re-measure the thread count on your own machine rather than copying 
 
 Things worth knowing before turning it on:
 
-- **The SDK must be processing on the GPU, and on 3.6.0 that is not the default.** A process that
-  never calls `cuvis.init` processes on the host, where a cube costs about 260 ms instead of 67 ms
-  and extra threads buy almost nothing (1.1x at eight). Until this package initializes the SDK
-  itself, force it in the host application before constructing a DataModule:
-
-  ```python
-  import cuvis
-  cuvis.init(cuvis.SdkSettings(force_gpu_mode="cuda"))
-  ```
-
+- **It only helps on the GPU.** On the SDK's host device, eight handles buy almost nothing.
+  Leave `sdk_cuda` on (its default); see
+  [SDK processing device](#sdk-processing-device-sdk_cuda) below.
 - **It needs a cuvis binding that releases the GIL.** The published `cuvis-il` 3.6.0.0 wheels
   do; every wheel before them held it. On a binding that holds it, extra threads are a small loss
   rather than a gain, so the reader probes the binding once per process and falls back to
@@ -200,6 +193,45 @@ index it will read:
 ```bash
 cu3s-to-npz --cu3s X.cu3s --out-dir out --annotations sibling --read-threads 8
 ```
+
+### SDK processing device (`sdk_cuda`)
+
+The cuvis SDK can process cubes on the GPU or on the host CPU. This package asks for the GPU,
+which is what `sdk_cuda: true`, the default, means. Turn it off to run on the host.
+
+```yaml
+data:
+  data_module: cu3s
+  params:
+    cu3s_file_path: X.cu3s
+    sdk_cuda: false      # default true
+```
+
+`cu3s-to-npz` takes `--no-sdk-cuda` for the same thing.
+
+On one 940-frame session, `Raw` mode, RTX 4070
+([full evidence](benchmarks/sdk_device/report.md)):
+
+| read_threads | GPU | host | ratio |
+| --- | --- | --- | --- |
+| 1 | 16.8 | 3.1 | 5.4x |
+| 8 | 49.3 | 3.7 | 13.5x |
+
+- **The flag exists because SDK 3.6.0 changed the default.** A process that never calls
+  `cuvis.init` now processes on the host. Nothing in this package called it, so the upgrade
+  would otherwise have moved every cu3s read onto the CPU silently.
+- **`read_threads` is a GPU-only lever.** On the host the 1-to-8 sweep stays flat at about
+  3 cubes/s, against 2.9x on the GPU. The two parameters are not independent.
+- **A machine without CUDA needs no change.** The SDK falls back to the host on its own, so
+  the default costs nothing there.
+- **The device barely changes the cube**, by one LSB on 0.0001% of elements and no more than
+  one LSB anywhere on the measured session: rounding in the cubalize interpolation, well under
+  sensor noise.
+- **The first `cuvis.init` in a process wins.** The SDK fixes its device there and silently
+  ignores every later one, returning success. So a host application that already initialized
+  the SDK keeps whatever device it chose, and two DataModules disagreeing in one process is a
+  warning rather than a second switch. This package initializes at DataModule construction and
+  again in each DataLoader worker, which is a fresh process that has initialized nothing.
 
 ### NPZ (`npz_multi`)
 

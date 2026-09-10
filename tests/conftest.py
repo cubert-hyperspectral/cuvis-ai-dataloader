@@ -10,6 +10,23 @@ import numpy as np
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def reset_sdk_gpu_mode():
+    """Clear the recorded SDK device between tests.
+
+    A process picks its SDK device once and keeps it, so ``_extras`` holds that as module
+    state; without this the first test to construct a DataModule would decide it for the
+    whole session.
+    """
+    from cuvis_ai_dataloader.data import _extras
+
+    _extras._requested_gpu_mode = None
+    _extras._applied_gpu_mode = None
+    yield
+    _extras._requested_gpu_mode = None
+    _extras._applied_gpu_mode = None
+
+
 @pytest.fixture
 def mock_cuvis_sdk():
     """Patch the ``cuvis`` SDK + COCO loading so cu3s tests run without real data.
@@ -42,6 +59,9 @@ def mock_cuvis_sdk():
     fake_cuvis = types.ModuleType("cuvis")
     fake_cuvis.SessionFile = Mock(return_value=mock_session)
     fake_cuvis.ProcessingContext = Mock(return_value=mock_pc)
+    # require_cuvis() initializes the SDK on first use, so a stand-in has to carry these.
+    fake_cuvis.init = Mock()
+    fake_cuvis.SdkSettings = Mock()
     pm = Mock()
     pm.Raw, pm.Reflectance, pm.SpectralRadiance = "Raw", "Reflectance", "SpectralRadiance"
     fake_cuvis.ProcessingMode = pm

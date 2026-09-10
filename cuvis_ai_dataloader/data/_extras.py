@@ -9,15 +9,21 @@ imports cleanly. The first use of a module whose extra is missing raises a clear
 
 ``accepts_data_config`` lets a DataModule ``__init__`` accept the nested ``DataConfig``
 shape (``DataModule(**cfg.data)``) without every subclass re-implementing the unpack.
+
+``configure_cuvis_sdk`` picks the device the cuvis SDK processes on; ``require_cuvis``
+applies it, because it is the one call every SDK entry in this package goes through.
 """
 
 from __future__ import annotations
 
 import functools
 import itertools
+import logging
 import threading
 import time
 from collections.abc import Callable
+
+from loguru import logger
 
 
 def accepts_data_config(init: Callable) -> Callable:
@@ -45,17 +51,61 @@ def accepts_data_config(init: Callable) -> Callable:
     return wrapper
 
 
+_requested_gpu_mode: str | None = None
+_applied_gpu_mode: str | None = None
+
+
+def configure_cuvis_sdk(*, cuda: bool) -> None:
+    """Choose the device the SDK processes on. Applied on the first SDK use in this process.
+
+    SDK 3.6.0 processes on the host unless a process calls ``cuvis.init``, which costs about
+    260 ms per cube against 67 ms and leaves ``read_threads`` with almost nothing to overlap.
+    The choice is only recorded here: ``cuvis.init`` has to happen before the first
+    ``SessionFile``, so ``require_cuvis`` applies it rather than each caller remembering to.
+
+    The SDK fixes its device at the **first** ``cuvis.init`` of a process and silently ignores
+    every later one -- it returns success and keeps the original device -- so a second,
+    conflicting choice cannot take effect and warns instead of pretending. For the same reason
+    a host application that initialized the SDK itself keeps whatever it chose.
+    """
+    global _requested_gpu_mode
+    mode = "cuda" if cuda else "host"
+    if _applied_gpu_mode is not None and mode != _applied_gpu_mode:
+        logger.warning(
+            "cuvis SDK already initialized on '{}'; the request for '{}' cannot take effect, "
+            "because the SDK fixes its device at the first init of a process.",
+            _applied_gpu_mode,
+            mode,
+        )
+        return
+    _requested_gpu_mode = mode
+
+
 def require_cuvis():
-    """Return the ``cuvis`` SDK module, or raise a clear install hint."""
+    """Return the ``cuvis`` SDK module, initialized once, or raise a clear install hint.
+
+    Every SDK entry in this package goes through here, which is what makes it the one place
+    that can guarantee ``cuvis.init`` runs before the first ``SessionFile`` -- including in a
+    DataLoader worker, which is a fresh process that has initialized nothing.
+    """
+    global _applied_gpu_mode
     try:
         import cuvis
-
-        return cuvis
     except ImportError as e:  # pragma: no cover - exercised via the lazy-extras smoke
         raise ImportError(
             "The 'cuvis' SDK is required for the cu3s data modules. "
             "Install with: uv pip install 'cuvis-ai-dataloader[cu3s]'"
         ) from e
+
+    if _requested_gpu_mode is not None and _applied_gpu_mode is None:
+        # WARNING, not the SDK's own DEBUG default, which prints a line per processed cube.
+        cuvis.init(
+            cuvis.SdkSettings(force_gpu_mode=_requested_gpu_mode),
+            global_loglevel=logging.WARNING,
+        )
+        _applied_gpu_mode = _requested_gpu_mode
+        logger.debug("cuvis SDK initialized with force_gpu_mode={}", _applied_gpu_mode)
+    return cuvis
 
 
 _RELEASES_GIL: bool | None = None
