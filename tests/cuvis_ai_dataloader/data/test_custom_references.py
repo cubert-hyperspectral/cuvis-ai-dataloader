@@ -124,11 +124,15 @@ def test_reader_one_sided_override(mock_cuvis_sdk, tmp_path, kind):
 
 
 class _OrderRecordingPC:
-    """A ProcessingContext stand-in that records call/assignment order."""
+    """A ProcessingContext stand-in that records call/assignment order.
 
-    def __init__(self, order: list[str]):
+    ``apply`` returns a real measurement rather than a bare Mock, because the reader reads a
+    cube off its result while opening.
+    """
+
+    def __init__(self, order: list[str], measurement):
         object.__setattr__(self, "order", order)
-        object.__setattr__(self, "apply", Mock())
+        object.__setattr__(self, "apply", Mock(return_value=measurement))
 
     def set_reference(self, *args, **kwargs):
         self.order.append("set_reference")
@@ -145,7 +149,9 @@ def test_refs_installed_before_processing_mode(mock_cuvis_sdk, tmp_path):
     import cuvis  # the fake module patched into sys.modules by the fixture
 
     order: list[str] = []
-    cuvis.ProcessingContext = Mock(return_value=_OrderRecordingPC(order))
+    cuvis.ProcessingContext = Mock(
+        return_value=_OrderRecordingPC(order, mock_cuvis_sdk["measurement"])
+    )
 
     main = _make_cu3s(tmp_path)
     white_session, _ = _ref_session(mock_cuvis_sdk)
