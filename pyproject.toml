@@ -23,7 +23,7 @@ keywords = [
     "machine-learning",
 ]
 dependencies = [
-    "cuvis-ai-core>=0.11.0",
+    "cuvis-ai-core>=0.12.0",  # _norm_source (the shared path-spelling rule) landed in 0.12.0
     "cuvis-ai-schemas>=0.8.0",
     "numpy",
     "torch",

@@ -194,13 +194,27 @@ def test_selector_predict_empty_iterates_universe(tmp_path):
 
 
 def test_selector_leakage_fires_on_overlap(tmp_path):
-    from cuvis_ai_core.data.selectors import SplitLeakageError
+    """An overlap is caught when the split declares the constraint that forbids it.
+
+    The flag became a typed constraint and the schema default is an empty list, so a
+    split that declares nothing is checked for nothing; enforcement raises
+    SplitConstraintError (SplitLeakageError is its subclass, kept for direct callers of
+    validate_leakage).
+    """
+    from cuvis_ai_core.data.selectors import SplitConstraintError
+    from cuvis_ai_schemas.training.data import (
+        Constraint,
+        ConstraintKind,
+        ConstraintSeverity,
+    )
 
     universe = _write_universe(tmp_path)
-    dm = MultiNpzDataModule(
-        splits=_split_cfg(train=[0, 1], test=[1, 2]), universe_csv=str(universe)
-    )
-    with pytest.raises(SplitLeakageError):
+    cfg = _split_cfg(train=[0, 1], test=[1, 2])
+    cfg.constraints = [
+        Constraint(kind=ConstraintKind.NO_SPLIT_OVERLAP, severity=ConstraintSeverity.ERROR)
+    ]
+    dm = MultiNpzDataModule(splits=cfg, universe_csv=str(universe))
+    with pytest.raises(SplitConstraintError):
         dm.setup(stage="fit")
 
 

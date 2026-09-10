@@ -16,6 +16,33 @@ from loguru import logger
 from .._extras import require_cuvis
 
 
+def count_measurements(cu3s_file_path: str | Path) -> int:
+    """How many measurements a ``.cu3s`` holds, without building a processing context.
+
+    Enumeration needs the count and nothing else. A full :class:`Cu3sCubeReader` costs a
+    ``ProcessingContext`` (which reserves SDK GPU processing pools) plus a read of
+    measurement 0, per file; ``len(SessionFile)`` is ``get_size()`` on the bare handle, so
+    this opens the recording, asks, and lets it go again.
+
+    Failures name the recording. The SDK raises a bare ``SDKException`` with no path in it,
+    which says nothing useful when a split names dozens of files and one of them is corrupt
+    or held open by another program. The handle is dropped in ``finally``: several probe
+    handles alive at once is exactly the situation the training pre-flight exists to avoid.
+    """
+    cuvis = require_cuvis()
+    path = str(cu3s_file_path)
+    session = None
+    try:
+        session = cuvis.SessionFile(path)
+        total = int(len(session))
+    except Exception as e:
+        raise ValueError(f"cannot open cu3s {path}: {e}") from e
+    finally:
+        del session
+    logger.debug(f"Probed cu3s {path}: {total} measurements")
+    return total
+
+
 def _parse_ref_spec(spec: str) -> tuple[str, int]:
     """Parse a reference spec ``"path"`` or ``"path:frame"`` into ``(path, frame)``.
 

@@ -219,3 +219,15 @@ def test_read_index_exceeding_measurements_raises_at_build(mock_cuvis_sdk, tmp_p
     dm = MultiCu3sDataModule(universe_csv=str(csv_path))
     with pytest.raises(ValueError, match="read index 99 >= 7"):
         dm.setup(stage="fit")
+
+
+def test_read_index_check_uses_the_light_probe(mock_cuvis_sdk, tmp_path):
+    """Validating read indices needs a count, not a processing context per recording."""
+    import sys
+
+    csv_path = _write_dataset(tmp_path)
+    dm = MultiCu3sDataModule(universe_csv=str(csv_path))
+    dm.setup(stage="fit")
+
+    assert sys.modules["cuvis"].ProcessingContext.call_count == 0
+    assert sys.modules["cuvis"].SessionFile.call_count > 0

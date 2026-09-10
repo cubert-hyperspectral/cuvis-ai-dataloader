@@ -3,6 +3,33 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.6.3 - 2026-09-10
+
+- `cu3s` folder mode opens only the recordings a run actually uses. A new `files` param
+  takes the list outright (what the CuvisNEXT training wizard sends, since it already
+  knows every recording its split assigns; a list or a comma string, and an empty list
+  means "not given" so a preset can ship `files: []` as a placeholder). Without it, a
+  split whose every selector names its sources (`files` / `file_indices`, or set
+  operations over those) narrows the folder by itself, which fixes the same cost for a
+  `restore-trainrun` over a folder. A positional or attribute-driven selector keeps the
+  walk, since only the full universe can answer it. Enumeration previously built a full
+  reader for every `*.cu3s` under `data_dir` before any selector was applied: an SDK
+  session, a `ProcessingContext` and a read of measurement 0 each, plus every sibling
+  COCO file when a constraint needed labels.
+- Enumeration counts measurements with a bare session (`count_measurements`), no
+  processing context, and names the recording when one cannot be opened; the SDK raises
+  without the path in it. `cu3s_multi` uses the same probe for its read-index check.
+- `validate_params` validates a `files` list and then leaves the folder alone.
+  `data_dir` can be a filesystem root, and the folder check walks until it meets its
+  first recording.
+- A source a split names but cannot be read now fails by name, before enumeration,
+  instead of surfacing later as core's anonymous "selector matched 0 samples".
+- Floor: `cuvis-ai-core>=0.12.0`, the release that introduced the shared path-spelling
+  rule this module now compares with. The lock moves to core 0.17.1 / schemas 0.12.0,
+  which retired the top-level `leakage_check` flag in favour of typed split
+  constraints; the GUI-authored-splits fixture and the two tests that asserted the old
+  flag are updated to the contract the GUI actually writes.
+
 ## 0.6.2 - 2026-08-31
 
 - Scoped the torch/torchvision cu128 index pin to a `cuda` dependency group (installed by
