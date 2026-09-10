@@ -217,16 +217,21 @@ def test_files_may_sit_outside_data_dir(mock_cuvis_sdk, tmp_path):
 
 
 def test_two_spellings_of_one_recording_are_opened_once(mock_cuvis_sdk, tmp_path):
+    """Two ways of writing one path must not put its measurements in twice."""
     folder = _make_cu3s_folder(tmp_path, names=("a",))
     plain = str(folder / "a.cu3s")
-    dm = Cu3sDataModule(
-        files=[plain, plain.replace("/", "\\") if "/" in plain else plain.upper()],
-        data_dir=str(folder),
-        frames="measurements",
-    )
+    # A dot-dot detour is a second spelling on every platform (resolve collapses it).
+    spellings = [plain, str(folder / "elsewhere" / ".." / "a.cu3s")]
+    if os.name == "nt":
+        # Only Windows folds letter case, which is the case the shared spelling rule is
+        # really there for (a hand-typed row against a scanned one). On POSIX case is
+        # significant, so an upper-cased path names a different file and must not fold.
+        spellings.append(plain.upper())
+    dm = Cu3sDataModule(files=spellings, data_dir=str(folder), frames="measurements")
+
     assert len(dm._folder_files()) == 1
     dm.enumerate()
-    assert len(set(_opened_sessions())) == 1
+    assert len({_canonical(p) for p in _opened_sessions()}) == 1
 
 
 def test_the_file_list_is_computed_once(mock_cuvis_sdk, tmp_path):
