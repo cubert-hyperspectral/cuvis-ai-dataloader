@@ -61,16 +61,6 @@ def _parse_ref_spec(spec: str) -> tuple[str, int]:
     return spec, 0
 
 
-def total_measurements_of(cu3s_file_path: str | Path) -> int:
-    """Frame count of a ``.cu3s`` without building a ProcessingContext.
-
-    ``Cu3sCubeReader`` builds one in ``__init__`` whatever the processing mode, and that build
-    is the expensive part, so a probe that only wants the count must not go through it.
-    """
-    cuvis = require_cuvis()
-    return int(len(cuvis.SessionFile(str(cu3s_file_path))))
-
-
 class Cu3sCubeReader:
     """Reads cube frames from a ``.cu3s`` session via the cuvis SDK."""
 
