@@ -3,6 +3,31 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.9.0 - 2026-09-11
+
+- **`cuda_cubes` hands out device-resident cubes**, off by default. A cube processed on the GPU
+  was copied into host memory and its device copy freed, only for torch to copy it straight back
+  for training; with this on, `batch["cube"]` is a zero-copy CUDA tensor (`cuvis.cuda` plus
+  DLPack) and neither copy happens. Measured to a GPU-resident cube on one 940-frame `Raw`
+  session: **1.76x** at one reader thread rising to **2.31x** at eight, because the copy is a
+  shared resource that reader threads queue behind. Evidence: `benchmarks/cuda_cubes/report.md`.
+- **The device cube is the same cube**, verified per element against the host path on real data:
+  it is the buffer the SDK already produced, so this skips a copy rather than recomputing.
+- Requires `sdk_cuda` and `num_workers=0`; the module raises rather than demoting either, since a
+  CUDA tensor is not sent across the DataLoader worker queue and host processing leaves no device
+  buffer to hand out. Turns itself off with a warning when the SDK, the device or the binding
+  cannot support it.
+- **Works around two defects in `cuvis` 3.6.0.0rc1.** Its wrapper calls
+  `cuvis_il.cuvis_cuda_view_ptr`, which the matching `cuvis-il` wheel does not export, so
+  `CudaImageData.to_torch` raises `AttributeError` on a perfectly good device buffer; and
+  `cuvis_cuda_mem_free` is generated taking `int32_t *` against its own documented `int`, so the
+  wrapper's own frees raise and buffers are never returned to the SDK's pool. Both are repaired
+  at runtime, and both repairs become no-ops once the binding is regenerated.
+- `Cu3sCubeReader` reads its first cube through `_read_with` rather than reaching into the
+  measurement, so the rule about when a processing mode is applied lives in one place. This also
+  fixes `processing_mode=None` opening: it no longer applies a mode while probing channel count.
+  `Cu3sCubeReader.wavelengths` is now `int32`, matching `wavelengths_nm`.
+
 ## 0.8.0 - 2026-09-11
 
 - **`sdk_cuda` selects the device the cuvis SDK processes on**, defaulting to the GPU. Available

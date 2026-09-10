@@ -232,6 +232,48 @@ On one 940-frame session, `Raw` mode, RTX 4070
   warning rather than a second switch. This package initializes at DataModule construction and
   again in each DataLoader worker, which is a fresh process that has initialized nothing.
 
+### Device-resident cubes (`cuda_cubes`)
+
+A cube processed on the GPU is copied into host memory and its device copy freed, only for
+torch to copy it straight back for training. `cuda_cubes` keeps it where it already is and
+hands the batch a zero-copy CUDA tensor. Off by default, because it changes what a batch
+contains.
+
+```yaml
+data:
+  data_module: cu3s
+  batch_size: 8
+  num_workers: 0         # required
+  params:
+    cu3s_file_path: X.cu3s
+    read_threads: 8
+    cuda_cubes: true     # default false
+```
+
+Cubes per second delivered **onto the GPU**, one 940-frame session, `Raw`, RTX 4070
+([full evidence](benchmarks/cuda_cubes/report.md)):
+
+| read_threads | `cuda_cubes: true` | `cuda_cubes: false` | ratio |
+| --- | --- | --- | --- |
+| 1 | 20.8 | 11.8 | 1.76x |
+| 4 | 49.5 | 22.0 | 2.25x |
+| 8 | 63.5 | 27.5 | 2.31x |
+
+- **`batch["cube"]` becomes a CUDA tensor** instead of a host one. It is the same cube, bit for
+  bit, on the same device torch would have put it on; what changes is that nothing downstream
+  should call `.cuda()` on it, and anything calling `.numpy()` on it will now fail.
+- **The gain grows with `read_threads`**, because the copy is a shared resource that reader
+  threads queue behind. The two parameters compound.
+- **`num_workers` must be 0** and `sdk_cuda` must be on; the module raises rather than
+  demoting either.
+- **It turns itself off** when the SDK, the device or the binding cannot support it, with a
+  warning, and reads through host memory instead. `cuvis.cuda.capabilities()` cannot see the
+  last of those, so it is probed rather than assumed.
+- **It needs a working `cuvis` device-buffer binding.** `cuvis` 3.6.0.0rc1 ships a wrapper that
+  calls two `cuvis_il` symbols its own binding does not export, so the package repairs them at
+  runtime; the repair does nothing once the binding is regenerated. See
+  `data/readers/cu3s_cuda.py`.
+
 ### NPZ (`npz_multi`)
 
 `npz_multi` loads one frame per compressed `.npz`, selected by a `splits.json` over a

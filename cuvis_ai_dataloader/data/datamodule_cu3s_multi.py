@@ -50,6 +50,7 @@ class _MultiCu3sDataset(Dataset):
         max_open_sessions: int = 4,
         read_threads: int = 0,
         sdk_cuda: bool = True,
+        cuda_cubes: bool = False,
     ) -> None:
         self._rows = rows
         self._processing_mode = processing_mode
@@ -59,6 +60,7 @@ class _MultiCu3sDataset(Dataset):
             read_threads=read_threads,
             sources=len({rec["materialized_path"] for rec in rows}) or 1,
             sdk_cuda=sdk_cuda,
+            cuda_cubes=cuda_cubes,
         )
         self._labelers: dict[str, Any] = {}
 
@@ -163,6 +165,9 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         # Process cubes on the GPU. Off means the SDK's 'host' mode, roughly 4x slower per
         # cube. On a machine without CUDA the SDK falls back to the host on its own.
         sdk_cuda: Any = True,
+        # Hand out cubes as device-resident torch tensors instead of copying them to host
+        # memory for torch to copy straight back. Needs sdk_cuda and num_workers=0.
+        cuda_cubes: Any = False,
     ) -> None:
         super().__init__(
             splits=splits,
@@ -180,6 +185,19 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             raise ValueError(f"read_threads must be >= 0, got {read_threads}")
         self.source_coherent_batches = bool(source_coherent_batches)
         self.sdk_cuda = parse_bool(sdk_cuda, key="sdk_cuda")
+        self.cuda_cubes = parse_bool(cuda_cubes, key="cuda_cubes")
+        # A device-resident cube only exists when the SDK processed it on the device, and a
+        # CUDA tensor cannot be handed across the worker queue, so neither is a silent demotion.
+        if self.cuda_cubes and not self.sdk_cuda:
+            raise ValueError(
+                "cuda_cubes=True requires sdk_cuda=True; the SDK has no device buffer to "
+                "hand out when it processes on the host."
+            )
+        if self.cuda_cubes and int(num_workers) > 0:
+            raise ValueError(
+                f"cuda_cubes=True cannot be combined with num_workers={num_workers}; CUDA "
+                "tensors are not sent across DataLoader worker processes, so set num_workers=0."
+            )
         # Recorded before anything can open a session, since the SDK fixes its device at the
         # first init of a process and ignores every later one.
         configure_cuvis_sdk(cuda=self.sdk_cuda)
@@ -329,6 +347,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             max_open_sessions=self.max_open_sessions,
             read_threads=self.read_threads,
             sdk_cuda=self.sdk_cuda,
+            cuda_cubes=self.cuda_cubes,
         )
 
     def _validate_read_indices(self, rows: list[dict[str, Any]]) -> None:
