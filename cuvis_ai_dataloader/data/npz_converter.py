@@ -113,6 +113,7 @@ def convert_cu3s_file(
     frame_limit: int | None = None,
     compress: bool = True,
     resume: bool = False,
+    read_threads: int = 0,
 ) -> list[dict[str, Any]]:
     """Convert one ``.cu3s`` to per-frame ``.npz`` files; return index records (no split).
 
@@ -168,7 +169,7 @@ def convert_cu3s_file(
             return [_record(i, _out(i)) for i in targets]
 
     from .labelers.coco_labeler import CocoLabeler
-    from .readers.cu3s_reader import Cu3sCubeReader
+    from .readers.cu3s_pool import open_reader
 
     labeler = CocoLabeler(annotation_json) if annotation_json is not None else None
     # Only pass the reference overrides when actually set, so the no-override call stays
@@ -179,7 +180,12 @@ def convert_cu3s_file(
     if dark_ref is not None:
         ref_kwargs["dark_ref"] = dark_ref
     records: list[dict[str, Any]] = []
-    with Cu3sCubeReader(str(cu3s_path), processing_mode=processing_mode, **ref_kwargs) as reader:
+    with open_reader(
+        str(cu3s_path),
+        read_threads=read_threads,
+        processing_mode=processing_mode,
+        **ref_kwargs,
+    ) as reader:
         total = int(reader.total_measurements)
         if frame_indices is not None:
             bad = [int(i) for i in frame_indices if not (0 <= int(i) < total)]
@@ -192,14 +198,19 @@ def convert_cu3s_file(
             indices = list(range(min(int(frame_limit), total)))
         else:
             indices = list(range(total))
-        skipped = 0
+        # Decide what to read before reading anything, so the reader can overlap the whole
+        # pending set instead of being asked for one frame at a time.
+        pending = {
+            i for i in indices if not (resume and _npz_is_valid(_out(i), need_masks=need_masks))
+        }
+        skipped = sum(1 for i in indices if i not in pending)
+        reads = reader.iter_reads([i for i in indices if i in pending])
         for i in indices:
             out = _out(i)
-            if resume and _npz_is_valid(out, need_masks=need_masks):
+            if i not in pending:
                 records.append(_record(i, out))
-                skipped += 1
                 continue
-            item = reader.read(i)
+            item = next(reads)
             cube_full = np.asarray(item["cube"], dtype=np.float32)  # [H, W, C]
             wavelengths = np.asarray(item["wavelengths"]).ravel().astype(np.int32, copy=False)
             payload: dict[str, Any] = {
@@ -256,10 +267,13 @@ def convert_cu3s(
     universe_csv: str | Path | None = None,
     compress: bool = True,
     frame_limit: int | None = None,
+    read_threads: int = 0,
 ) -> list[dict[str, Any]]:
     """Convert many ``.cu3s`` files; optionally write a combined universe CSV. Returns all records.
 
     ``frame_limit`` (if set) converts only the first N frames of each file (for smoke runs).
+    ``read_threads`` is forwarded to every file (see :func:`convert_cu3s_file`).
+
     ``white_ref`` / ``dark_ref`` override the baked references for EVERY input file (see
     :func:`convert_cu3s_file`) — only batch files that share the same day-matched references;
     the deliberately-heterogeneous converters (:func:`convert_split_manifest` /
@@ -287,6 +301,7 @@ def convert_cu3s(
                 dark_ref=dark_ref,
                 frame_limit=frame_limit,
                 compress=compress,
+                read_threads=read_threads,
             )
         )
     if universe_csv is not None:

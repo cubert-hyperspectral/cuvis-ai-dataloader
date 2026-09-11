@@ -3,6 +3,40 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.7.0 - 2026-09-12
+
+- **Threaded cu3s reading (`read_threads`).** A batch is read on several `cuvis.SessionFile`
+  handles at once, all sharing one `ProcessingContext` -- the only topology measured to produce
+  correct cubes, and the only one that fits on an 8 GB card, since a private context per handle
+  costs both a ~13 s build and its own GPU buffers. Off by default. On one 940-frame session it
+  takes reading from 12.9 to 52.6 cubes/s at eight threads (4.1x), with zero wrong cubes verified
+  per frame at every thread count from 1 to 16. Concurrency is bounded by `batch_size`, not by
+  `read_threads`, because torch hands a map-style dataset a whole batch of indices and nothing
+  earlier; `num_workers` must be 0. `Cu3sReaderCache` treats `read_threads` as a budget for the
+  cache as a whole rather than a per-file count, so the open-handle total stays flat however many
+  recordings an epoch touches, and the opt-in `source_coherent_batches` keeps a batch inside one
+  recording so the cache stops evicting mid-batch. The `cu3s-to-npz` converter takes the same
+  parameter. Evidence: `benchmarks/threaded_reading/report.md`.
+- Folder enumeration uses `count_measurements` (from 0.6.3) for its frame counts rather than a
+  second probe of its own.
+- **`Cu3sCubeReader` shares its `ProcessingContext` with the SDK's lazy cube path.** The SDK's
+  `Measurement.cube` property builds a second context when `session._pc` is unset, and that
+  second build cost ~1.3 s per file open and held duplicate GPU and host buffers for the reader's
+  lifetime while never being used.
+- **Requires cuvis 3.6.0.0** and the matching system-wide C++ Cuvis SDK. The Windows
+  `cuvis-il<3.5.4` cap is gone: 3.6.0 publishes `win_amd64`, `manylinux_2_35_x86_64` and
+  `manylinux_2_35_aarch64` wheels, and the extra now names only `cuvis`, which pulls the
+  matching `cuvis-il` itself.
+- **The published `cuvis-il` 3.6.0 wheels release the GIL**, so `read_threads` is reachable from
+  a plain install for the first time; every earlier wheel held it. The runtime probe and its
+  single-threaded fallback stay, since they are what makes one config safe on both bindings.
+- **Known limitation, removed in the next release:** on SDK 3.6.0 a process that never calls
+  `cuvis.init` processes on the host rather than the GPU, at roughly 260 ms per cube against
+  67 ms, and threading then buys almost nothing. This package does not yet initialize the SDK,
+  so a host application wanting the GPU path must call
+  `cuvis.init(cuvis.SdkSettings(force_gpu_mode="cuda"))` before constructing a DataModule.
+- Added a `bench` extra carrying the plotting and process-memory dependencies the scripts under
+  `benchmarks/` need; they previously relied on an undeclared ad-hoc environment.
 ## 0.6.3 - 2026-09-10
 
 - `cu3s` folder mode opens only the recordings a run actually uses. A new `files` param
