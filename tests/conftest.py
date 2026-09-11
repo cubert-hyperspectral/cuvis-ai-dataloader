@@ -8,23 +8,29 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import torch
 
 
 @pytest.fixture(autouse=True)
 def reset_sdk_gpu_mode():
-    """Clear the recorded SDK device between tests.
+    """Clear the recorded SDK device and cube-residency mode between tests.
 
-    A process picks its SDK device once and keeps it, so ``_extras`` holds that as module
-    state; without this the first test to construct a DataModule would decide it for the
-    whole session.
+    A process picks both once and keeps them, so they live as module state; without this the
+    first test to construct a DataModule would decide them for the whole session.
     """
     from cuvis_ai_dataloader.data import _extras
+    from cuvis_ai_dataloader.data.readers import cu3s_cuda
 
-    _extras._requested_gpu_mode = None
-    _extras._applied_gpu_mode = None
+    def clear():
+        """Forget both process-global SDK choices."""
+        _extras._requested_gpu_mode = None
+        _extras._applied_gpu_mode = None
+        cu3s_cuda._enabled = False
+        cu3s_cuda._available = None
+
+    clear()
     yield
-    _extras._requested_gpu_mode = None
-    _extras._applied_gpu_mode = None
+    clear()
 
 
 @pytest.fixture
@@ -46,6 +52,13 @@ def mock_cuvis_sdk():
     mock_measurement.cube.channels = channels
     mock_measurement.cube.wavelength = wavelengths
     mock_measurement.data = {"cube": True}
+
+    # The device-resident path. to_torch hands back a host tensor: the fake cannot produce
+    # real device memory, and no test should need a GPU to check the plumbing.
+    mock_cuda_cube = Mock()
+    mock_cuda_cube.to_torch = Mock(return_value=torch.from_numpy(cube))
+    mock_cuda_cube.wavelength = wavelengths
+    mock_measurement.get_cube_cuda = Mock(return_value=mock_cuda_cube)
 
     mock_session = Mock()
     mock_session.get_measurement = Mock(return_value=mock_measurement)

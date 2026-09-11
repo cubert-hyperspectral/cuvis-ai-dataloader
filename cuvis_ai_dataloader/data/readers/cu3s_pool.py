@@ -195,6 +195,7 @@ class Cu3sReaderCache:
         read_threads: int = 0,
         sources: int = 1,
         sdk_cuda: bool = True,
+        cuda_cubes: bool = False,
     ) -> None:
         if max_open_sessions < 1:
             raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
@@ -202,6 +203,7 @@ class Cu3sReaderCache:
             raise ValueError(f"read_threads must be >= 0, got {read_threads}")
         self._processing_mode = processing_mode
         self._sdk_cuda = bool(sdk_cuda)
+        self._cuda_cubes = bool(cuda_cubes)
         self._max_open = min(int(max_open_sessions), max(1, int(sources)))
         self._per_file_threads = int(read_threads) // self._max_open
         self._outer_size = min(self._max_open, int(read_threads)) if read_threads else 0
@@ -226,6 +228,7 @@ class Cu3sReaderCache:
             read_threads=self._per_file_threads,
             processing_mode=self._processing_mode,
             sdk_cuda=self._sdk_cuda,
+            cuda_cubes=self._cuda_cubes,
         )
         self._readers[source] = reader
         return reader

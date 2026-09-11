@@ -232,6 +232,47 @@ On one 940-frame session, `Raw` mode, RTX 4070
   warning rather than a second switch. This package initializes at DataModule construction and
   again in each DataLoader worker, which is a fresh process that has initialized nothing.
 
+### Device-resident cubes (`cuda_cubes`)
+
+A cube processed on the GPU is copied into host memory and its device copy freed, only for
+torch to copy it straight back for training. `cuda_cubes` keeps it where it already is and
+hands the batch a zero-copy CUDA tensor. Off by default, because it changes what a batch
+contains.
+
+```yaml
+data:
+  data_module: cu3s
+  batch_size: 8
+  num_workers: 0         # required
+  params:
+    cu3s_file_path: X.cu3s
+    read_threads: 8
+    cuda_cubes: true     # default false
+```
+
+Cubes per second delivered **onto the GPU**, one 940-frame session, `Raw`, RTX 4070
+([full evidence](benchmarks/cuda_cubes/report.md)):
+
+| read_threads | `cuda_cubes: true` | `cuda_cubes: false` | ratio |
+| --- | --- | --- | --- |
+| 1 | 24.1 | 15.5 | 1.55x |
+| 4 | 74.4 | 34.3 | 2.17x |
+| 8 | 84.1 | 37.9 | 2.22x |
+
+- **`batch["cube"]` becomes a CUDA tensor** instead of a host one. It is the same cube, bit for
+  bit, on the same device torch would have put it on; what changes is that nothing downstream
+  should call `.cuda()` on it, and anything calling `.numpy()` on it will now fail.
+- **The gain grows with `read_threads`**, because the copy is a shared resource that reader
+  threads queue behind. The two parameters compound.
+- **`num_workers` must be 0** and `sdk_cuda` must be on; the module raises rather than
+  demoting either.
+- **It turns itself off** when the SDK or the device cannot support it, with a warning, and
+  reads through host memory instead.
+- **It needs `cuvis` 3.6.0.0rc2 or newer**, which the `cu3s` extra already requires. rc1's
+  device-buffer path raises on first use (fixed upstream in cuvis.python#98), and
+  `cuvis.cuda.capabilities()` does not catch that, since it probes the native symbols rather
+  than the Python layer over them.
+
 ### NPZ (`npz_multi`)
 
 `npz_multi` loads one frame per compressed `.npz`, selected by a `splits.json` over a

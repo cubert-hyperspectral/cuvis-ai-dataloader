@@ -15,6 +15,7 @@ import numpy as np
 from loguru import logger
 
 from .._extras import require_cuvis
+from .cu3s_cuda import enable_cuda_cubes, read_cube
 
 
 def count_measurements(cu3s_file_path: str | Path) -> int:
@@ -81,8 +82,12 @@ class Cu3sCubeReader:
         processing_mode: str | None = "Reflectance",
         white_ref: str | Path | None = None,
         dark_ref: str | Path | None = None,
+        cuda_cubes: bool = False,
     ) -> None:
         cuvis = require_cuvis()
+        # Before the session is opened: the SDK reads this flag while filling a measurement,
+        # so a cube processed earlier has already been copied to the host and freed.
+        self.cuda_cubes = enable_cuda_cubes(cuvis) if cuda_cubes else False
         self.cu3s_file_path = str(cu3s_file_path)
         if not os.path.exists(self.cu3s_file_path):
             raise ValueError(f"cu3s path does not exist: {self.cu3s_file_path}")
@@ -111,9 +116,12 @@ class Cu3sCubeReader:
         )
         self._processing_applied = self._apply_processing_mode(cuvis, processing_mode)
 
-        mesu0 = self.session.get_measurement(0)
-        self.num_channels = mesu0.cube.channels
-        self.wavelengths = np.array(mesu0.cube.wavelength).ravel()
+        # Through _read_with rather than the measurement directly, so the rule about when a
+        # processing mode is applied lives in exactly one place: reading mesu0 unconditionally
+        # would apply one even for processing_mode=None, whose contract is the file's data as-is.
+        first = self._read_with(self.session, 0)
+        self.wavelengths = first["wavelengths"]
+        self.num_channels = int(first["cube"].shape[-1])
         self.total_measurements = len(self.session)
         logger.debug(
             f"Opened cu3s {self.cu3s_file_path}: {self.total_measurements} measurements, "
@@ -244,11 +252,14 @@ class Cu3sCubeReader:
     @property
     def wavelengths_nm(self) -> np.ndarray:
         """Per-channel wavelengths (nm, int32) from the first measurement."""
-        mesu = self.session.get_measurement(0)
-        return np.array(mesu.cube.wavelength, dtype=np.int32).ravel()
+        return self.read(0)["wavelengths"]
 
     def read(self, mesu_index: int) -> dict:
-        """Return ``{"cube", "mesu_index", "wavelengths"}`` for one measurement."""
+        """Return ``{"cube", "mesu_index", "wavelengths"}`` for one measurement.
+
+        ``cube`` is a ``numpy.ndarray``, or a device-resident ``torch.Tensor`` when the reader
+        was opened with ``cuda_cubes``.
+        """
         return self._read_with(self.session, mesu_index)
 
     def _read_with(self, session, mesu_index: int) -> dict:
@@ -263,10 +274,9 @@ class Cu3sCubeReader:
         # With no mode set (processing_mode=None) the file's data is used as-is unless absent.
         if self._processing_applied or "cube" not in mesu.data:
             mesu = self.pc.apply(mesu)
-        cube_array: np.ndarray = mesu.cube.array
-        wavelengths = np.array(mesu.cube.wavelength, dtype=np.int32).ravel()
+        cube, wavelengths = read_cube(mesu)
         return {
-            "cube": cube_array,
+            "cube": cube,
             "mesu_index": int(mesu_index),
             "wavelengths": wavelengths,
         }
