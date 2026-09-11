@@ -17,12 +17,15 @@ uses semantic versioning.
   CUDA tensor is not sent across the DataLoader worker queue and host processing leaves no device
   buffer to hand out. Turns itself off with a warning when the SDK, the device or the binding
   cannot support it.
-- **Works around two defects in `cuvis` 3.6.0.0rc1.** Its wrapper calls
-  `cuvis_il.cuvis_cuda_view_ptr`, which the matching `cuvis-il` wheel does not export, so
-  `CudaImageData.to_torch` raises `AttributeError` on a perfectly good device buffer; and
-  `cuvis_cuda_mem_free` is generated taking `int32_t *` against its own documented `int`, so the
-  wrapper's own frees raise and buffers are never returned to the SDK's pool. Both are repaired
-  at runtime, and both repairs become no-ops once the binding is regenerated.
+- **Works around two defects in the `cuvis` 3.6.0.0rc1 wrapper** (fixed upstream in
+  cuvis.python#98; the native SDK and the binding are both correct). Its `CudaImageData._view`
+  calls `cuvis_il.cuvis_cuda_view_ptr`, which no `cuvis-il` build exports, so `to_torch` raises
+  `AttributeError` on a perfectly good device buffer; and its `__del__` and DLPack deleter pass
+  the handle by value to `cuvis_cuda_mem_free`, which the C API declares as taking a pointer, so
+  every free raises `TypeError` and no buffer is ever returned to the SDK's pool. Both are
+  repaired at runtime, and both repairs become no-ops once the wrapper is fixed.
+  `cuvis.cuda.capabilities()` cannot be used to gate on this: it probes the native symbols and
+  reports the path as available regardless.
 - `Cu3sCubeReader` reads its first cube through `_read_with` rather than reaching into the
   measurement, so the rule about when a processing mode is applied lives in one place. This also
   fixes `processing_mode=None` opening: it no longer applies a mode while probing channel count.

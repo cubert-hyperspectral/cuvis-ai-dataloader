@@ -26,10 +26,11 @@ _available: bool | None = None
 def _compatible_mem_free(cuvis_il, real_free):
     """Free a device buffer through whichever calling convention the binding accepts.
 
-    ``cuvis`` 3.6.0.0rc1 generates ``cuvis_cuda_mem_free`` taking ``int32_t *`` while its own
-    docstring documents ``i_mem: int, in``, so every call the wrapper itself makes raises
-    ``TypeError`` and the buffer is never returned to the SDK's pool. Trying the documented
-    form first means this stops doing anything the moment the binding is regenerated.
+    The C API declares ``cuvis_cuda_mem_free(CUVIS_CUDA_MEM* i_mem)``, a pointer, but
+    ``cuvis`` 3.6.0.0rc1 passes the handle by value from both ``CudaImageData.__del__`` and
+    the DLPack capsule deleter, so every free raises ``TypeError`` and no buffer is ever
+    returned to the SDK's pool. Trying the wrapper's own form first means this stops doing
+    anything once the wrapper is fixed (cuvis.python#98).
     """
 
     def free(handle):
@@ -45,12 +46,14 @@ def _compatible_mem_free(cuvis_il, real_free):
 
 
 def _repair_binding() -> bool:
-    """Fill in what ``cuvis`` 3.6.0.0rc1's wrapper calls but its own binding does not export.
+    """Work around ``cuvis`` 3.6.0.0rc1's broken device-buffer path (cuvis.python#98).
 
-    ``CudaImageData._view`` calls ``cuvis_il.cuvis_cuda_view_ptr``, which is absent from the
-    published ``cuvis-il`` wheel, so ``to_torch`` raises ``AttributeError`` on an otherwise
-    working device buffer. SWIG already converts the ``void *`` field to an int, which is all
-    the missing helper did. Returns whether the binding could be made usable.
+    ``CudaImageData._view`` calls ``cuvis_il.cuvis_cuda_view_ptr``, which no ``cuvis-il``
+    build exports and which was never written, so ``to_torch`` raises ``AttributeError`` on an
+    otherwise working device buffer. SWIG already converts the ``void *`` field to an int,
+    which is all the missing helper would have done. Both repairs here are in the wrapper's
+    Python layer; the native SDK and the binding are correct. Returns whether the device
+    buffer could be made reachable.
     """
     try:
         from cuvis_il import cuvis_il
@@ -72,9 +75,9 @@ def cuda_cubes_available(cuvis) -> bool:
     """Whether this build, device and binding can hand out device-resident cubes.
 
     Three separate things can deny it and the SDK answers only two: the library may lack the
-    CUDA functions, and the device may not support them. The third is the binding defect
+    CUDA functions, and the device may not support them. The third is the wrapper defect
     :func:`_repair_binding` covers, which ``capabilities()`` cannot see because it probes the
-    native symbols rather than the Python glue over them.
+    native symbols rather than the Python layer over them.
     """
     global _available
     if _available is None:
