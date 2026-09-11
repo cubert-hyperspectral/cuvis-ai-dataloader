@@ -35,7 +35,6 @@ def cuda_capable(monkeypatch):
     cuda.capabilities = Mock(return_value=types.SimpleNamespace(same_process=True))
     cuda.enable = Mock()
     monkeypatch.setattr(cuvis, "cuda", cuda, raising=False)
-    monkeypatch.setattr(cu3s_cuda, "_repair_binding", lambda: True)
     return cuda
 
 
@@ -52,19 +51,6 @@ def test_an_sdk_without_cuda_support_falls_back_rather_than_raising(mock_cuvis_s
 def test_a_device_the_sdk_rejects_falls_back(mock_cuvis_sdk, cu3s, cuda_capable):
     """capabilities() is the SDK's verdict on the hardware, and it is allowed to say no."""
     cuda_capable.capabilities.return_value = types.SimpleNamespace(same_process=False)
-    reader = Cu3sCubeReader(cu3s, cuda_cubes=True)
-    try:
-        assert reader.cuda_cubes is False
-        cuda_capable.enable.assert_not_called()
-    finally:
-        reader.close()
-
-
-def test_a_binding_without_the_device_view_falls_back(
-    mock_cuvis_sdk, cu3s, cuda_capable, monkeypatch
-):
-    """capabilities() probes the native symbols and cannot see the Python glue over them."""
-    monkeypatch.setattr(cu3s_cuda, "_repair_binding", lambda: False)
     reader = Cu3sCubeReader(cu3s, cuda_cubes=True)
     try:
         assert reader.cuda_cubes is False

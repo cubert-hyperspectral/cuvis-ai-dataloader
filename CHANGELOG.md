@@ -9,7 +9,7 @@ uses semantic versioning.
   was copied into host memory and its device copy freed, only for torch to copy it straight back
   for training; with this on, `batch["cube"]` is a zero-copy CUDA tensor (`cuvis.cuda` plus
   DLPack) and neither copy happens. Measured to a GPU-resident cube on one 940-frame `Raw`
-  session: **1.76x** at one reader thread rising to **2.31x** at eight, because the copy is a
+  session: **1.55x** at one reader thread rising to **2.22x** at eight, because the copy is a
   shared resource that reader threads queue behind. Evidence: `benchmarks/cuda_cubes/report.md`.
 - **The device cube is the same cube**, verified per element against the host path on real data:
   it is the buffer the SDK already produced, so this skips a copy rather than recomputing.
@@ -17,15 +17,13 @@ uses semantic versioning.
   CUDA tensor is not sent across the DataLoader worker queue and host processing leaves no device
   buffer to hand out. Turns itself off with a warning when the SDK, the device or the binding
   cannot support it.
-- **Works around two defects in the `cuvis` 3.6.0.0rc1 wrapper** (fixed upstream in
-  cuvis.python#98; the native SDK and the binding are both correct). Its `CudaImageData._view`
-  calls `cuvis_il.cuvis_cuda_view_ptr`, which no `cuvis-il` build exports, so `to_torch` raises
-  `AttributeError` on a perfectly good device buffer; and its `__del__` and DLPack deleter pass
-  the handle by value to `cuvis_cuda_mem_free`, which the C API declares as taking a pointer, so
-  every free raises `TypeError` and no buffer is ever returned to the SDK's pool. Both are
-  repaired at runtime, and both repairs become no-ops once the wrapper is fixed.
-  `cuvis.cuda.capabilities()` cannot be used to gate on this: it probes the native symbols and
-  reports the path as available regardless.
+- **Needs `cuvis` 3.6.0.0rc2**, which the `cu3s` extra requires. The rc1 wrapper could not hand
+  out a device cube at all -- `CudaImageData._view` called a `cuvis_il` symbol no build exports,
+  and its frees passed the handle by value where the C API declares a pointer, so no buffer was
+  ever returned to the SDK's pool. Both are fixed upstream in cuvis.python#98 and verified here
+  against rc2, so this package carries no workaround for them. Note `cuvis.cuda.capabilities()`
+  could not have gated on it: it probes the native symbols and reports the path as available
+  regardless.
 - `Cu3sCubeReader` reads its first cube through `_read_with` rather than reaching into the
   measurement, so the rule about when a processing mode is applied lives in one place. This also
   fixes `processing_mode=None` opening: it no longer applies a mode while probing channel count.

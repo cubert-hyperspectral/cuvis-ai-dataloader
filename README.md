@@ -255,9 +255,9 @@ Cubes per second delivered **onto the GPU**, one 940-frame session, `Raw`, RTX 4
 
 | read_threads | `cuda_cubes: true` | `cuda_cubes: false` | ratio |
 | --- | --- | --- | --- |
-| 1 | 20.8 | 11.8 | 1.76x |
-| 4 | 49.5 | 22.0 | 2.25x |
-| 8 | 63.5 | 27.5 | 2.31x |
+| 1 | 24.1 | 15.5 | 1.55x |
+| 4 | 74.4 | 34.3 | 2.17x |
+| 8 | 84.1 | 37.9 | 2.22x |
 
 - **`batch["cube"]` becomes a CUDA tensor** instead of a host one. It is the same cube, bit for
   bit, on the same device torch would have put it on; what changes is that nothing downstream
@@ -266,13 +266,12 @@ Cubes per second delivered **onto the GPU**, one 940-frame session, `Raw`, RTX 4
   threads queue behind. The two parameters compound.
 - **`num_workers` must be 0** and `sdk_cuda` must be on; the module raises rather than
   demoting either.
-- **It turns itself off** when the SDK, the device or the binding cannot support it, with a
-  warning, and reads through host memory instead. `cuvis.cuda.capabilities()` cannot see the
-  last of those, so it is probed rather than assumed.
-- **It needs a working `cuvis` device-buffer binding.** `cuvis` 3.6.0.0rc1 ships a wrapper that
-  calls two `cuvis_il` symbols its own binding does not export, so the package repairs them at
-  runtime; the repair does nothing once the binding is regenerated. See
-  `data/readers/cu3s_cuda.py`.
+- **It turns itself off** when the SDK or the device cannot support it, with a warning, and
+  reads through host memory instead.
+- **It needs `cuvis` 3.6.0.0rc2 or newer**, which the `cu3s` extra already requires. rc1's
+  device-buffer path raises on first use (fixed upstream in cuvis.python#98), and
+  `cuvis.cuda.capabilities()` does not catch that, since it probes the native symbols rather
+  than the Python layer over them.
 
 ### NPZ (`npz_multi`)
 
