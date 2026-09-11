@@ -23,68 +23,17 @@ _enabled = False
 _available: bool | None = None
 
 
-def _compatible_mem_free(cuvis_il, real_free):
-    """Free a device buffer through whichever calling convention the binding accepts.
-
-    The C API declares ``cuvis_cuda_mem_free(CUVIS_CUDA_MEM* i_mem)``, a pointer, but
-    ``cuvis`` 3.6.0.0rc1 passes the handle by value from both ``CudaImageData.__del__`` and
-    the DLPack capsule deleter, so every free raises ``TypeError`` and no buffer is ever
-    returned to the SDK's pool. Trying the wrapper's own form first means this stops doing
-    anything once the wrapper is fixed (cuvis.python#98).
-    """
-
-    def free(handle):
-        """Release one CUVIS_CUDA_MEM handle."""
-        try:
-            return real_free(handle)
-        except TypeError:
-            box = cuvis_il.new_p_int()
-            cuvis_il.p_int_assign(box, int(handle))
-            return real_free(box)
-
-    return free
-
-
-def _repair_binding() -> bool:
-    """Work around ``cuvis`` 3.6.0.0rc1's broken device-buffer path (cuvis.python#98).
-
-    ``CudaImageData._view`` calls ``cuvis_il.cuvis_cuda_view_ptr``, which no ``cuvis-il``
-    build exports and which was never written, so ``to_torch`` raises ``AttributeError`` on an
-    otherwise working device buffer. SWIG already converts the ``void *`` field to an int,
-    which is all the missing helper would have done. Both repairs here are in the wrapper's
-    Python layer; the native SDK and the binding are correct. Returns whether the device
-    buffer could be made reachable.
-    """
-    try:
-        from cuvis_il import cuvis_il
-    except ImportError:  # pragma: no cover - require_cuvis has already raised by here
-        return False
-    if not hasattr(cuvis_il, "cuvis_cuda_view_ptr"):
-        if not hasattr(cuvis_il.cuvis_cuda_mem_view_t(), "device_ptr"):
-            return False
-        cuvis_il.cuvis_cuda_view_ptr = lambda view: int(view.device_ptr)
-        logger.debug("patched the absent cuvis_il.cuvis_cuda_view_ptr helper")
-    if not getattr(cuvis_il.cuvis_cuda_mem_free, "_cuvis_ai_compatible", False):
-        patched = _compatible_mem_free(cuvis_il, cuvis_il.cuvis_cuda_mem_free)
-        patched._cuvis_ai_compatible = True
-        cuvis_il.cuvis_cuda_mem_free = patched
-    return True
-
-
 def cuda_cubes_available(cuvis) -> bool:
-    """Whether this build, device and binding can hand out device-resident cubes.
+    """Whether this build and device can hand out device-resident cubes.
 
-    Three separate things can deny it and the SDK answers only two: the library may lack the
-    CUDA functions, and the device may not support them. The third is the wrapper defect
-    :func:`_repair_binding` covers, which ``capabilities()`` cannot see because it probes the
-    native symbols rather than the Python layer over them.
+    Two things can deny it: the library may lack the CUDA functions, which ``cuvis.binding``
+    answers without calling anything, and the device or driver may not support them, which
+    only the SDK can answer. ``capabilities()`` covers both.
     """
     global _available
     if _available is None:
         cuda = getattr(cuvis, "cuda", None)  # absent before cuvis 3.6.0
-        _available = (
-            cuda is not None and bool(cuda.capabilities().same_process) and _repair_binding()
-        )
+        _available = cuda is not None and bool(cuda.capabilities().same_process)
     return _available
 
 
@@ -100,9 +49,8 @@ def enable_cuda_cubes(cuvis) -> bool:
         return True
     if not cuda_cubes_available(cuvis):
         logger.warning(
-            "device-resident cubes are unavailable here (needs cuvis >= 3.6.0, a CUDA device "
-            "the SDK accepts, and a binding exposing the device-buffer view); reading cubes "
-            "through host memory instead."
+            "device-resident cubes are unavailable here (needs cuvis >= 3.6.0.0rc2 and a CUDA "
+            "device the SDK accepts); reading cubes through host memory instead."
         )
         return False
     cuvis.cuda.enable()
