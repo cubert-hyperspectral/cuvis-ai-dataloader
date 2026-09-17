@@ -69,7 +69,7 @@ cu3s-to-npz = "cuvis_ai_dataloader.scripts.convert_cu3s_to_npz:cu3s_to_npz_cli"
 # are floored to 3.6.0; the old `cuvis-il<3.5.4` cap left 3.5.3.2 bindings loading
 # 3.6.0 DLLs (a minor-version skew). cuvis 3.6.0 requires cuvis-il>=3.6.0,<3.7.0.
 cu3s = ["cuvis>=3.6.0", "cuvis-il>=3.6.0,<3.7.0; sys_platform == 'win32'"]
-coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1,<1.0"]
+coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1,<2.0"]
 tiff = ["tifffile>=2024.5.0"]
 # Benchmark-only. The evidence scripts under benchmarks/ are not part of the package or CI,
 # but they are the source of the numbers in the README, so their deps are pinned here.
