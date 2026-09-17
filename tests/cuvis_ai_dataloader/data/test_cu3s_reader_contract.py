@@ -53,3 +53,61 @@ def test_wavelengths_are_int32_nanometres(mock_cuvis_sdk, cu3s):
         assert reader.read(0)["wavelengths"].dtype == np.int32
     finally:
         reader.close()
+
+
+# ------------------------------------------------------ processing_mode=None at open and read
+@pytest.fixture
+def cuda_capable(monkeypatch):
+    """Give the fake SDK a cuvis.cuda that reports the same-process path as usable."""
+    import types
+    from unittest.mock import Mock
+
+    import cuvis
+
+    cuda = types.ModuleType("cuvis.cuda")
+    cuda.capabilities = Mock(return_value=types.SimpleNamespace(same_process=True))
+    cuda.enable = Mock()
+    monkeypatch.setattr(cuvis, "cuda", cuda, raising=False)
+    return cuda
+
+
+def test_no_processing_mode_leaves_a_recorded_cube_untouched_at_open_and_read(mock_cuvis_sdk, cu3s):
+    """processing_mode=None means the file's data as-is: opening the reader, which reads the
+    first measurement to learn the channel count, must not apply a mode either."""
+    pc = mock_cuvis_sdk["processing_context"]
+    reader = Cu3sCubeReader(cu3s, processing_mode=None)
+    try:
+        assert pc.apply.call_count == 0
+        reader.read(3)
+        assert pc.apply.call_count == 0
+    finally:
+        reader.close()
+
+
+def test_a_requested_mode_is_applied_at_open_and_on_every_read(mock_cuvis_sdk, cu3s):
+    pc = mock_cuvis_sdk["processing_context"]
+    reader = Cu3sCubeReader(cu3s, processing_mode="Raw")
+    try:
+        assert pc.apply.call_count == 1  # the first measurement, read at open
+        reader.read(3)
+        assert pc.apply.call_count == 2
+    finally:
+        reader.close()
+
+
+def test_device_cubes_without_a_processing_mode_come_off_the_device_buffer(
+    mock_cuvis_sdk, cu3s, cuda_capable
+):
+    """The un-applied path has to read the device buffer too, not the absent host cube."""
+    import torch
+
+    pc = mock_cuvis_sdk["processing_context"]
+    measurement = mock_cuvis_sdk["measurement"]
+    reader = Cu3sCubeReader(cu3s, processing_mode=None, cuda_cubes=True)
+    try:
+        assert reader.cuda_cubes is True
+        assert pc.apply.call_count == 0
+        assert measurement.get_cube_cuda.call_count >= 1
+        assert isinstance(reader.read(2)["cube"], torch.Tensor)
+    finally:
+        reader.close()
