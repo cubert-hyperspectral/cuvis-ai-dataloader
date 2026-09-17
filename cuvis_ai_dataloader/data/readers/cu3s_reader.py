@@ -248,6 +248,13 @@ class Cu3sCubeReader:
         processing-mode rule below, which the two must not drift on.
         """
         mesu = session.get_measurement(mesu_index)
+        if mesu is None:
+            # The SDK answers a past-the-end index with None rather than an error, and the
+            # apply below would then fail with a message about the wrong thing.
+            raise IndexError(
+                f"measurement {mesu_index} is out of range for {self.cu3s_file_path} "
+                f"({len(session)} measurements)"
+            )
         # A requested processing mode is always applied: a cube already present in mesu.data may
         # be the recorded (raw) cube, so trusting it would silently bypass the requested mode.
         # With no mode set (processing_mode=None) the file's data is used as-is unless absent.
