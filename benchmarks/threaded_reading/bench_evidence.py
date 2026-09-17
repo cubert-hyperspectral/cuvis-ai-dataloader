@@ -15,11 +15,12 @@ import sys
 import time
 import types
 
-REPO = r"C:\dev\cuvis_ai\cuvis-ai-dataloader\cuvis_ai_dataloader"
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PACKAGE = os.path.join(REPO, "cuvis_ai_dataloader")
 for name, path in (
-    ("cuvis_ai_dataloader", REPO),
-    ("cuvis_ai_dataloader.data", os.path.join(REPO, "data")),
-    ("cuvis_ai_dataloader.data.readers", os.path.join(REPO, "data", "readers")),
+    ("cuvis_ai_dataloader", PACKAGE),
+    ("cuvis_ai_dataloader.data", os.path.join(PACKAGE, "data")),
+    ("cuvis_ai_dataloader.data.readers", os.path.join(PACKAGE, "data", "readers")),
 ):
     module = types.ModuleType(name)
     module.__path__ = [path]
