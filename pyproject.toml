@@ -63,7 +63,12 @@ cu3s-to-npz = "cuvis_ai_dataloader.scripts.convert_cu3s_to_npz:cu3s_to_npz_cli"
 [project.optional-dependencies]
 # Per-format heavy deps. The orchestrator composer installs the union of extras
 # a run actually activates, so a tiff_paired child env never pulls `cuvis`.
-cu3s = ["cuvis>=3.5.0", "cuvis-il<3.5.4; sys_platform == 'win32'"]
+# `cuvis` wraps the machine-wide Cuvis SDK DLLs (the wheel ships none: it does
+# os.add_dll_directory(os.getenv("CUVIS"))), so the binding version must match the
+# installed SDK. On win32 the CuvisNEXT installer ships SDK 3.6.0, so the bindings
+# are floored to 3.6.0; the old `cuvis-il<3.5.4` cap left 3.5.3.2 bindings loading
+# 3.6.0 DLLs (a minor-version skew). cuvis 3.6.0 requires cuvis-il>=3.6.0,<3.7.0.
+cu3s = ["cuvis>=3.6.0", "cuvis-il>=3.6.0,<3.7.0; sys_platform == 'win32'"]
 coco = ["pycocotools>=2.0.11", "scikit-image>=0.26.0", "dataclass-wizard>=0.39.1,<1.0"]
 tiff = ["tifffile>=2024.5.0"]
 all = ["cuvis-ai-dataloader[cu3s,coco,tiff]"]
