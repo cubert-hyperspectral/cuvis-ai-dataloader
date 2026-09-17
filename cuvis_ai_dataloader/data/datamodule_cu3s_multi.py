@@ -49,6 +49,7 @@ class _MultiCu3sDataset(Dataset):
         *,
         max_open_sessions: int = 4,
         read_threads: int = 0,
+        source_coherent_batches: bool = False,
     ) -> None:
         self._rows = rows
         self._processing_mode = processing_mode
@@ -57,6 +58,7 @@ class _MultiCu3sDataset(Dataset):
             max_open_sessions=max_open_sessions,
             read_threads=read_threads,
             sources=len({rec["materialized_path"] for rec in rows}) or 1,
+            coherent=source_coherent_batches,
         )
         self._labelers: dict[str, Any] = {}
 
@@ -319,6 +321,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             self._processing_mode,
             max_open_sessions=self.max_open_sessions,
             read_threads=self.read_threads,
+            source_coherent_batches=self.source_coherent_batches,
         )
 
     def _validate_read_indices(self, rows: list[dict[str, Any]]) -> None:

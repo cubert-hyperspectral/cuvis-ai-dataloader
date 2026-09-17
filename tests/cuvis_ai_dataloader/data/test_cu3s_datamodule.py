@@ -430,3 +430,18 @@ def test_source_coherent_batches_keep_a_batch_within_one_recording(mock_cuvis_sd
     dm.setup(stage="predict")
     stems = {tuple(sorted(set(b["stem"]))) for b in dm.predict_dataloader()}
     assert all(len(s) == 1 for s in stems)
+
+
+def test_source_coherent_batches_hand_the_reader_cache_the_whole_thread_budget(
+    mock_cuvis_sdk, tmp_path
+):
+    folder = _make_cu3s_folder(tmp_path, n=4)
+    coherent = Cu3sDataModule(
+        data_dir=str(folder), frames="measurements", read_threads=4, source_coherent_batches=True
+    )
+    coherent.setup(stage="predict")
+    assert coherent.predict_ds._cache._per_file_threads == 4
+
+    divided = Cu3sDataModule(data_dir=str(folder), frames="measurements", read_threads=4)
+    divided.setup(stage="predict")
+    assert divided.predict_ds._cache._per_file_threads == 1

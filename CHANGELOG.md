@@ -14,8 +14,10 @@ uses semantic versioning.
   `read_threads`, because torch hands a map-style dataset a whole batch of indices and nothing
   earlier; `num_workers` must be 0. `Cu3sReaderCache` treats `read_threads` as a budget for the
   cache as a whole rather than a per-file count, so the open-handle total stays flat however many
-  recordings an epoch touches, and the opt-in `source_coherent_batches` keeps a batch inside one
-  recording so the cache stops evicting mid-batch. The `cu3s-to-npz` converter takes the same
+  recordings an epoch touches, and warns when that split leaves fewer than two threads per
+  recording; the opt-in `source_coherent_batches` keeps a batch inside one recording so the cache
+  stops evicting mid-batch and gives every recording the whole budget. The cache also says so once
+  when it starts evicting readers, since each eviction rebuilds a ProcessingContext. The `cu3s-to-npz` converter takes the same
   parameter. Evidence: `benchmarks/threaded_reading/report.md`.
 - Folder enumeration uses `count_measurements` (from 0.6.3) for its frame counts rather than a
   second probe of its own.

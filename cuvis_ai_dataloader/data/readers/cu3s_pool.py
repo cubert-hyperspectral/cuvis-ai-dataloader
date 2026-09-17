@@ -200,6 +200,7 @@ class Cu3sReaderCache:
         max_open_sessions: int = 4,
         read_threads: int = 0,
         sources: int = 1,
+        coherent: bool = False,
     ) -> None:
         if max_open_sessions < 1:
             raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
@@ -207,8 +208,24 @@ class Cu3sReaderCache:
             raise ValueError(f"read_threads must be >= 0, got {read_threads}")
         self._processing_mode = processing_mode
         self._max_open = min(int(max_open_sessions), max(1, int(sources)))
-        self._per_file_threads = int(read_threads) // self._max_open
+        # With source-coherent batches a batch reads one recording, so cross-file overlap
+        # cannot carry the budget and the whole of it belongs inside each file (at a cost of
+        # up to max_open_sessions x read_threads open handles). Otherwise it is divided across
+        # the sessions the cache may hold open, so the handle count stays flat.
+        split = 1 if coherent else self._max_open
+        self._per_file_threads = int(read_threads) // split
         self._outer_size = min(self._max_open, int(read_threads)) if read_threads else 0
+        if read_threads and not coherent and self._per_file_threads < 2 and self._max_open > 1:
+            logger.warning(
+                "read_threads={} divided across up to {} open sessions leaves {} thread(s) per "
+                "recording, so reads inside a recording stay single-threaded and only batches "
+                "spanning several recordings overlap. Use read_threads >= {} or set "
+                "source_coherent_batches=True to spend the whole budget inside each recording.",
+                read_threads,
+                self._max_open,
+                self._per_file_threads,
+                2 * self._max_open,
+            )
         self._readers: OrderedDict[str, Cu3sCubeReader] = OrderedDict()
         self._outer: ThreadPoolExecutor | None = None
         self._evictions = 0

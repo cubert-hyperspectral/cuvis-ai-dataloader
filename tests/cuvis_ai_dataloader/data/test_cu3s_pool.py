@@ -356,3 +356,32 @@ def test_cache_warns_once_when_it_starts_evicting(mock_cuvis_sdk, tmp_path):
         assert cache._evictions == 5
     finally:
         cache.close()
+
+
+# ------------------------------------------------------------------------ thread budget
+def test_coherent_batches_give_each_recording_the_whole_budget():
+    cache, messages = _warnings_during(
+        lambda: Cu3sReaderCache(
+            processing_mode=None, max_open_sessions=4, read_threads=4, sources=4, coherent=True
+        )
+    )
+    assert cache._per_file_threads == 4
+    assert not any("thread(s) per" in m for m in messages)
+
+
+def test_a_thin_budget_split_warns_and_a_healthy_one_does_not():
+    thin, messages = _warnings_during(
+        lambda: Cu3sReaderCache(
+            processing_mode=None, max_open_sessions=4, read_threads=4, sources=4
+        )
+    )
+    assert thin._per_file_threads == 1
+    assert any("thread(s) per" in m and "read_threads >= 8" in m for m in messages), messages
+
+    healthy, messages = _warnings_during(
+        lambda: Cu3sReaderCache(
+            processing_mode=None, max_open_sessions=4, read_threads=8, sources=4
+        )
+    )
+    assert healthy._per_file_threads == 2
+    assert not any("thread(s) per" in m for m in messages)

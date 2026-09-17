@@ -184,12 +184,15 @@ Things worth knowing before turning it on:
   `cuvis-ai-core` does not forward the batched fetch. Validation, test and predict are unaffected.
 - **Host processing mode barely benefits.** There the lever is `processing_thread_count` in
   the SDK settings, not this parameter.
-- **Multi-file spends the budget across recordings, not inside them.** `read_threads` is divided
-  by the number of sessions the dataset holds open, so the handle count stays flat; a multi-file
-  epoch is bounded by per-file context builds rather than by reads.
-  `source_coherent_batches: true` keeps each batch inside one recording so the reader cache stops
-  evicting mid-batch, at the cost of changing which samples share a batch. It replaces the
-  loader's sampler, so it cannot be used under DDP.
+- **Multi-file divides the budget across recordings unless batches are source-coherent.** Without
+  `source_coherent_batches`, `read_threads` is divided by the sessions the cache holds open
+  (`max_open_sessions`, default 4), so the handle count stays flat; `read_threads: 4` over four or
+  more recordings then leaves one thread per recording, only batches spanning several recordings
+  overlap, and the reader warns about the split. `source_coherent_batches: true` keeps each batch
+  inside one recording, so the cache stops evicting mid-batch and every recording gets the whole
+  `read_threads` inside itself, at a cost of up to `max_open_sessions x read_threads` open handles
+  (about 0.38 GB of RSS each): pair it with `max_open_sessions: 2`. It changes which samples share
+  a batch and replaces the loader's sampler, so it cannot be used under DDP.
 
 The npz converter takes the same parameter and needs no batch size, since it already knows every
 index it will read:

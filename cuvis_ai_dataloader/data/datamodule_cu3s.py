@@ -171,6 +171,7 @@ class _Cu3sRefDataset(Dataset):
         *,
         max_open_sessions: int = 4,
         read_threads: int = 0,
+        source_coherent_batches: bool = False,
     ) -> None:
         self._refs = refs
         self._processing_mode = processing_mode
@@ -179,6 +180,7 @@ class _Cu3sRefDataset(Dataset):
             max_open_sessions=max_open_sessions,
             read_threads=read_threads,
             sources=len({ref.source for ref in refs}) or 1,
+            coherent=source_coherent_batches,
         )
         self._labelers: dict[str, Any] = {}
 
@@ -634,6 +636,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             self.processing_mode,
             max_open_sessions=self.max_open_sessions,
             read_threads=self.read_threads,
+            source_coherent_batches=self.source_coherent_batches,
         )
 
     def category_name_to_id(self) -> dict[str, int] | None:
