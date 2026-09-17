@@ -14,6 +14,9 @@ shape (``DataModule(**cfg.data)``) without every subclass re-implementing the un
 from __future__ import annotations
 
 import functools
+import itertools
+import threading
+import time
 from collections.abc import Callable
 
 
@@ -53,6 +56,56 @@ def require_cuvis():
             "The 'cuvis' SDK is required for the cu3s data modules. "
             "Install with: uv pip install 'cuvis-ai-dataloader[cu3s]'"
         ) from e
+
+
+_RELEASES_GIL: bool | None = None
+_PROBE_SECONDS = 0.03
+
+
+def _spin_rate(work: Callable[[], object]) -> float:
+    """Counter iterations per second reached by a second thread while ``work`` repeats.
+
+    ``work`` repeats until the probe window is full rather than running once, because a call
+    shorter than the window would otherwise be measured over a span too brief to mean
+    anything: the spinner's rate over a few microseconds is scheduling noise. A real cube read
+    is longer than the window, so it runs exactly once.
+    """
+    counter = itertools.count()
+    stop = threading.Event()
+
+    def spin() -> None:
+        """Increment until told to stop."""
+        while not stop.is_set():
+            next(counter)
+
+    spinner = threading.Thread(target=spin, daemon=True)
+    spinner.start()
+    started = time.perf_counter()
+    try:
+        while time.perf_counter() - started < _PROBE_SECONDS:
+            work()
+    finally:
+        elapsed = time.perf_counter() - started
+        stop.set()
+        spinner.join()
+    return next(counter) / elapsed if elapsed > 0 else 0.0
+
+
+def cuvis_releases_gil(sdk_call: Callable[[], object]) -> bool:
+    """Whether SDK calls let other Python threads run. Probed once per process.
+
+    Probed rather than read off a version, because the GIL release is an unversioned
+    binding change that no requirement can express, and on a binding that holds the GIL
+    extra reader threads cost throughput rather than gaining it. ``sdk_call`` must be a
+    real SDK call long enough to observe, i.e. a cube read. The baseline uses ``sleep``,
+    which does release the GIL, so the ratio is near 1 when the SDK does too and near 0
+    when it does not: an effect large enough to survive a loaded machine.
+    """
+    global _RELEASES_GIL
+    if _RELEASES_GIL is None:
+        baseline = _spin_rate(lambda: time.sleep(0.005))
+        _RELEASES_GIL = bool(baseline) and _spin_rate(sdk_call) / baseline > 0.2
+    return _RELEASES_GIL
 
 
 def require_tifffile():

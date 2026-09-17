@@ -81,6 +81,9 @@ class _FakeReader:
         cube = np.full((6, 8, 3), float(i + 1), dtype=np.float32)  # [H, W, C]
         return {"cube": cube, "mesu_index": int(i), "wavelengths": np.array([450, 550, 650])}
 
+    def iter_reads(self, indices):
+        return (self.read(i) for i in indices)
+
     def __enter__(self):
         return self
 
@@ -105,6 +108,8 @@ class _FakeLabeler:
 @pytest.fixture
 def patched(monkeypatch):
     monkeypatch.setattr("cuvis_ai_dataloader.data.readers.cu3s_reader.Cu3sCubeReader", _FakeReader)
+    # The converter opens through the cu3s_pool factory, which bound the name at import.
+    monkeypatch.setattr("cuvis_ai_dataloader.data.readers.cu3s_pool.Cu3sCubeReader", _FakeReader)
     monkeypatch.setattr("cuvis_ai_dataloader.data.labelers.coco_labeler.CocoLabeler", _FakeLabeler)
 
 
