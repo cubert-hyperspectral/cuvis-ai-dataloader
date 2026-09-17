@@ -11,7 +11,9 @@ from __future__ import annotations
 import types
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
+import torch
 
 from cuvis_ai_dataloader.data.datamodule_cu3s import Cu3sDataModule
 from cuvis_ai_dataloader.data.readers import cu3s_cuda
@@ -117,3 +119,29 @@ def test_the_flag_reaches_the_reader_cache_through_the_datamodule(
     dm.setup(stage="predict")
     dataset = dm.predict_dataloader().dataset
     assert dataset._cache._cuda_cubes is True
+
+
+def test_a_host_reader_in_a_device_mode_process_still_returns_numpy(
+    mock_cuvis_sdk, cu3s, cuda_capable
+):
+    """The SDK switch is process-wide and one-way; a reader that promised host cubes copies
+    back instead of handing its callers a CUDA tensor they never asked for."""
+    from loguru import logger
+
+    device_reader = Cu3sCubeReader(cu3s, cuda_cubes=True)
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        host_reader = Cu3sCubeReader(cu3s)
+    finally:
+        logger.remove(sink)
+    try:
+        assert any("copies every cube back to host memory" in m for m in messages), messages
+        device_cube = device_reader.read(0)["cube"]
+        host_cube = host_reader.read(0)["cube"]
+        assert isinstance(device_cube, torch.Tensor)
+        assert isinstance(host_cube, np.ndarray)
+        assert np.array_equal(host_cube, device_cube.cpu().numpy())
+    finally:
+        device_reader.close()
+        host_reader.close()

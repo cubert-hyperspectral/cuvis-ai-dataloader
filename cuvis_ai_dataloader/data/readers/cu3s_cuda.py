@@ -49,7 +49,7 @@ def enable_cuda_cubes(cuvis) -> bool:
         return True
     if not cuda_cubes_available(cuvis):
         logger.warning(
-            "device-resident cubes are unavailable here (needs cuvis >= 3.6.0.0rc2 and a CUDA "
+            "device-resident cubes are unavailable here (needs cuvis >= 3.6.0.0 and a CUDA "
             "device the SDK accepts); reading cubes through host memory instead."
         )
         return False
@@ -64,15 +64,20 @@ def is_enabled() -> bool:
     return _enabled
 
 
-def read_cube(mesu) -> tuple[Any, np.ndarray]:
-    """The measurement's cube and wavelengths, from device memory when that mode is on.
+def read_cube(mesu, *, device: bool) -> tuple[Any, np.ndarray]:
+    """The measurement's cube and wavelengths, as the reader that owns it promised them.
 
-    Returns a ``torch.Tensor`` on the GPU in device mode and a ``numpy.ndarray`` otherwise.
-    In device mode ``mesu.cube`` is not merely slower, it is ``None``: the host fetch that
-    would populate it is exactly what was skipped, so everything has to come off the
-    ``CudaImageData``.
+    ``device`` is the reader's own ``cuda_cubes``. The SDK's mode is process-wide and one-way,
+    so once any reader has switched it on, ``mesu.cube`` is ``None`` for every reader: the host
+    fetch that would populate it is exactly what was skipped, and everything has to come off
+    the ``CudaImageData``. A reader that promised host cubes then copies back, so its callers
+    keep getting ``numpy.ndarray`` rather than a CUDA tensor they never asked for.
     """
     if not _enabled:
         return mesu.cube.array, np.array(mesu.cube.wavelength, dtype=np.int32).ravel()
     image = mesu.get_cube_cuda()
-    return image.to_torch(), np.array(image.wavelength, dtype=np.int32).ravel()
+    wavelengths = np.array(image.wavelength, dtype=np.int32).ravel()
+    tensor = image.to_torch()
+    if device:
+        return tensor, wavelengths
+    return tensor.cpu().numpy(), wavelengths

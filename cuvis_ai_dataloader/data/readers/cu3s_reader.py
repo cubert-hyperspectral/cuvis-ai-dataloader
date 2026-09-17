@@ -15,7 +15,7 @@ import numpy as np
 from loguru import logger
 
 from .._extras import require_cuvis
-from .cu3s_cuda import enable_cuda_cubes, read_cube
+from .cu3s_cuda import enable_cuda_cubes, is_enabled, read_cube
 
 
 def count_measurements(cu3s_file_path: str | Path) -> int:
@@ -78,6 +78,15 @@ class Cu3sCubeReader:
         # Before the session is opened: the SDK reads this flag while filling a measurement,
         # so a cube processed earlier has already been copied to the host and freed.
         self.cuda_cubes = enable_cuda_cubes(cuvis) if cuda_cubes else False
+        if not self.cuda_cubes and is_enabled():
+            # Another reader switched the SDK into device mode, which cannot be undone for
+            # this process; this reader keeps its host contract by copying each cube back.
+            logger.warning(
+                "cu3s {}: this process already hands out device-resident cubes (a reader was "
+                "opened with cuda_cubes=True), so this reader copies every cube back to host "
+                "memory; open it with cuda_cubes=True to avoid the copy.",
+                Path(str(cu3s_file_path)).name,
+            )
         self.cu3s_file_path = str(cu3s_file_path)
         if not os.path.exists(self.cu3s_file_path):
             raise ValueError(f"cu3s path does not exist: {self.cu3s_file_path}")
@@ -275,7 +284,7 @@ class Cu3sCubeReader:
         # With no mode set (processing_mode=None) the file's data is used as-is unless absent.
         if self._processing_applied or "cube" not in mesu.data:
             mesu = self.pc.apply(mesu)
-        cube, wavelengths = read_cube(mesu)
+        cube, wavelengths = read_cube(mesu, device=self.cuda_cubes)
         return {
             "cube": cube,
             "mesu_index": int(mesu_index),
