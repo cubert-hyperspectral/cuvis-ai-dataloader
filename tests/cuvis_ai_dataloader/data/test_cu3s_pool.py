@@ -7,6 +7,8 @@ multiplicity is only observable through the constructor's call count.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from cuvis_ai_dataloader.data.readers.cu3s_pool import (
@@ -291,3 +293,36 @@ def test_read_goes_through_the_lease_queue(mock_cuvis_sdk, cu3s, monkeypatch):
         assert reader._leases.qsize() == before  # the handle went back to the pool
     finally:
         reader.close()
+
+
+def test_a_failing_group_waits_for_its_siblings_before_raising(
+    mock_cuvis_sdk, tmp_path, releases_gil, monkeypatch
+):
+    """Raising on the first failed file while another file's read is still running would let
+    the caller's next get() evict and close the reader that read still holds."""
+    paths = []
+    for name in ("a", "b"):
+        path = tmp_path / f"{name}.cu3s"
+        path.write_bytes(b"")
+        paths.append(str(path))
+    cache = Cu3sReaderCache(processing_mode=None, max_open_sessions=2, read_threads=4, sources=2)
+    try:
+        failing, slow = cache.get(paths[0]), cache.get(paths[1])
+        events: list[str] = []
+
+        def fail(indices):
+            events.append("failed")
+            raise RuntimeError("sdk said no")
+
+        def slow_read(indices):
+            time.sleep(0.3)
+            events.append("sibling done")
+            return [{"mesu_index": i} for i in indices]
+
+        monkeypatch.setattr(failing, "read_many", fail)
+        monkeypatch.setattr(slow, "read_many", slow_read)
+        with pytest.raises(RuntimeError, match="sdk said no"):
+            cache.read_many([(paths[0], 0), (paths[1], 1)])
+        assert "sibling done" in events, "the error surfaced while a sibling was still reading"
+    finally:
+        cache.close()

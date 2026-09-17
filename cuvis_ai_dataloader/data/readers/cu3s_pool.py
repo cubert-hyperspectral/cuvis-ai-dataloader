@@ -16,7 +16,7 @@ import queue
 import random
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Iterable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
 import numpy as np
@@ -264,6 +264,10 @@ class Cu3sReaderCache:
         if self._outer is None:
             self._outer = ThreadPoolExecutor(self._outer_size, thread_name_prefix="cu3s-file")
         futures = [self._outer.submit(reader.read_many, indices) for reader, indices in work]
+        # Every group finishes before any result is inspected: raising on the first failure
+        # while a sibling still reads would let the caller's next get() evict and close the
+        # reader that sibling holds.
+        wait(futures)
         return [future.result() for future in futures]
 
     def close(self) -> None:
