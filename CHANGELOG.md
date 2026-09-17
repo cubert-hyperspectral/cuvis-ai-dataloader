@@ -3,58 +3,7 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## 0.9.0 - 2026-09-11
-
-- **`cuda_cubes` hands out device-resident cubes**, off by default. A cube processed on the GPU
-  was copied into host memory and its device copy freed, only for torch to copy it straight back
-  for training; with this on, `batch["cube"]` is a zero-copy CUDA tensor (`cuvis.cuda` plus
-  DLPack) and neither copy happens. Measured to a GPU-resident cube on one 940-frame `Raw`
-  session: **1.55x** at one reader thread rising to **2.22x** at eight, because the copy is a
-  shared resource that reader threads queue behind. Evidence: `benchmarks/cuda_cubes/report.md`.
-- **The device cube is the same cube**, verified per element against the host path on real data:
-  it is the buffer the SDK already produced, so this skips a copy rather than recomputing.
-- Requires `sdk_cuda` and `num_workers=0`; the module raises rather than demoting either, since a
-  CUDA tensor is not sent across the DataLoader worker queue and host processing leaves no device
-  buffer to hand out. Turns itself off with a warning when the SDK, the device or the binding
-  cannot support it.
-- **Needs `cuvis` 3.6.0.0rc2**, which the `cu3s` extra requires. The rc1 wrapper could not hand
-  out a device cube at all -- `CudaImageData._view` called a `cuvis_il` symbol no build exports,
-  and its frees passed the handle by value where the C API declares a pointer, so no buffer was
-  ever returned to the SDK's pool. Both are fixed upstream in cuvis.python#98 and verified here
-  against rc2, so this package carries no workaround for them. Note `cuvis.cuda.capabilities()`
-  could not have gated on it: it probes the native symbols and reports the path as available
-  regardless.
-- `Cu3sCubeReader` reads its first cube through `_read_with` rather than reaching into the
-  measurement, so the rule about when a processing mode is applied lives in one place. This also
-  fixes `processing_mode=None` opening: it no longer applies a mode while probing channel count.
-  `Cu3sCubeReader.wavelengths` is now `int32`, matching `wavelengths_nm`.
-
-## 0.8.0 - 2026-09-12
-
-- **`sdk_cuda` selects the device the cuvis SDK processes on**, defaulting to the GPU. Available
-  on both cu3s DataModules, on `convert_cu3s_file` / `convert_cu3s` and as `--no-sdk-cuda` on
-  `cu3s-to-npz`. This closes the known limitation noted in 0.7.0: SDK 3.6.0 processes on the host
-  unless a process calls `cuvis.init`, and nothing here called it, so 0.7.0 on its own moved every
-  cu3s read onto the CPU. Measured on one 940-frame `Raw` session: the GPU is **5.4x** faster
-  single-threaded (16.8 against 3.1 cubes/s) and **13.5x** at eight reader threads. Evidence:
-  `benchmarks/sdk_device/report.md`.
-- **`read_threads` is a GPU-only lever.** On the host the whole 1-to-8 sweep stays flat at about
-  3 cubes/s, against 2.9x on the GPU, so the two parameters are not independent. Documented
-  rather than enforced, since a host-only machine is a legitimate configuration.
-- **The device does not meaningfully change the cube.** Verified per element against the real SDK:
-  the two implementations disagree by one LSB on 0.0001% of elements and by no more than one LSB
-  anywhere, which is rounding in the cubalize interpolation.
-- `require_cuvis` now performs the SDK init, once per process, because it is the one call every
-  SDK entry in this package already goes through -- including inside a DataLoader worker, which is
-  a fresh process that has initialized nothing. `Cu3sReaderCache` carries the choice across the
-  pickle boundary so a worker reopens on the right device.
-- **The first `cuvis.init` of a process wins.** The SDK fixes its device there and silently ignores
-  every later one, returning success either way, so a host application that already initialized the
-  SDK keeps its own choice and a second, conflicting `sdk_cuda` warns instead of pretending to
-  switch; two DataModules disagreeing before the first SDK call warn as well, and the later one
-  wins. A machine without CUDA is unaffected: the SDK falls back to the host by itself.
-
-## 0.7.0 - 2026-09-12
+## 0.7.0 - 2026-09-17
 
 - **Threaded cu3s reading (`read_threads`).** A batch is read on several `cuvis.SessionFile`
   handles at once, all sharing one `ProcessingContext` -- the only topology measured to produce
@@ -64,32 +13,69 @@ uses semantic versioning.
   per frame at every thread count from 1 to 16. Concurrency is bounded by `batch_size`, not by
   `read_threads`, because torch hands a map-style dataset a whole batch of indices and nothing
   earlier; `num_workers` must be 0. `Cu3sReaderCache` treats `read_threads` as a budget for the
-  cache as a whole rather than a per-file count, so the open-handle total stays flat however many
-  recordings an epoch touches, and warns when that split leaves fewer than two threads per
-  recording; the opt-in `source_coherent_batches` keeps a batch inside one recording so the cache
-  stops evicting mid-batch and gives every recording the whole budget. The cache also says so once
-  when it starts evicting readers, since each eviction rebuilds a ProcessingContext. The `cu3s-to-npz` converter takes the same
-  parameter. Evidence: `benchmarks/threaded_reading/report.md`.
-- Folder enumeration uses `count_measurements` (from 0.6.3) for its frame counts rather than a
-  second probe of its own.
+  cache as a whole: without `source_coherent_batches` it is divided across the sessions the cache
+  holds open so the open-handle total stays flat however many recordings an epoch touches, and it
+  warns when that split leaves fewer than two threads per recording; with `source_coherent_batches`
+  a batch reads one recording, so every recording gets the whole budget. The cache says so once
+  when it starts evicting readers, since each eviction rebuilds a ProcessingContext, and a failed
+  read in one recording waits for the other recordings of the batch before raising, so no eviction
+  closes a reader still in use. The `cu3s-to-npz` converter takes the same parameter. Evidence:
+  `benchmarks/threaded_reading/report.md`.
+- **`sdk_cuda` selects the device the cuvis SDK processes on**, defaulting to the GPU. Available
+  on both cu3s DataModules, on `convert_cu3s_file` / `convert_cu3s` and as `--no-sdk-cuda` on
+  `cu3s-to-npz`. SDK 3.6.0 processes on the host unless a process calls `cuvis.init`, and nothing
+  here called it, so the 3.6.0 move on its own would have put every cu3s read on the CPU. Measured
+  on one 940-frame `Raw` session: the GPU is **5.4x** faster single-threaded (16.8 against 3.1
+  cubes/s) and **13.5x** at eight reader threads; on the host the whole 1-to-8 sweep stays flat at
+  about 3 cubes/s, so `read_threads` is a GPU-only lever. The device does not meaningfully change
+  the cube: the two implementations disagree by one LSB on 0.0001% of elements and by no more than
+  one LSB anywhere. `require_cuvis` performs the init once per process, because it is the one call
+  every SDK entry in this package goes through, including inside a DataLoader worker;
+  `Cu3sReaderCache` carries the choice across the pickle boundary. The first `cuvis.init` of a
+  process wins and the SDK does not say so, so a host application that already initialized the SDK
+  keeps its own device, a second conflicting `sdk_cuda` after the init warns instead of pretending
+  to switch, and two DataModules disagreeing before the first SDK call warn as well (the later one
+  wins). A machine without CUDA is unaffected: the SDK falls back to the host by itself. Evidence:
+  `benchmarks/sdk_device/report.md`.
+- **`cuda_cubes` hands out device-resident cubes**, off by default. A cube processed on the GPU
+  was copied into host memory and its device copy freed, only for torch to copy it straight back
+  for training; with this on, `batch["cube"]` is a zero-copy CUDA tensor (`cuvis.cuda` plus
+  DLPack) and neither copy happens. Measured to a GPU-resident cube on one 940-frame `Raw`
+  session: **1.55x** at one reader thread rising to **2.22x** at eight, because the copy is a
+  shared resource that reader threads queue behind. The device cube is the same cube, verified per
+  element against the host path on real data. Requires `sdk_cuda` and `num_workers=0`; the module
+  raises rather than demoting either. Turns itself off with a warning when the SDK, the device or
+  the binding cannot support it. The SDK's switch is process-wide and one-way, so a reader opened
+  with `cuda_cubes=False` after another reader switched it on copies each cube back to host memory
+  and warns once, keeping its host contract. Needs `cuvis` 3.6.0.0: the rc1 wrapper could not hand
+  out a device cube at all (`CudaImageData._view` called a `cuvis_il` symbol no build exports, and
+  its frees passed the handle by value where the C API declares a pointer), both fixed upstream in
+  cuvis.python#98. Evidence: `benchmarks/cuda_cubes/report.md`.
 - **`Cu3sCubeReader` shares its `ProcessingContext` with the SDK's lazy cube path.** The SDK's
   `Measurement.cube` property builds a second context when `session._pc` is unset, and that
   second build cost ~1.3 s per file open and held duplicate GPU and host buffers for the reader's
   lifetime while never being used.
-- **Requires cuvis 3.6.0.0** and the matching system-wide C++ Cuvis SDK. The Windows
-  `cuvis-il<3.5.4` cap is gone: 3.6.0 publishes `win_amd64`, `manylinux_2_35_x86_64` and
-  `manylinux_2_35_aarch64` wheels, and the extra now names only `cuvis`, which pulls the
-  matching `cuvis-il` itself.
+- `Cu3sCubeReader` reads its first cube through `_read_with` rather than reaching into the
+  measurement, so the rule about when a processing mode is applied lives in one place; this also
+  fixes `processing_mode=None` opening, which applied a mode while probing the channel count.
+  `Cu3sCubeReader.wavelengths` is `int32`, and `wavelengths_nm` returns the wavelengths captured at
+  open instead of reading a cube per call. A measurement index past the end of the recording
+  raises `IndexError` naming the file and its count, where the SDK's `None` used to reach
+  `ProcessingContext.apply`.
+- Folder enumeration uses `count_measurements` (from 0.6.3) for its frame counts rather than a
+  second probe of its own.
+- **Requires cuvis 3.6.0.0** and the matching system-wide C++ Cuvis SDK 3.6.0; the 3.6.0 binding
+  fails at import against a 3.5.x runtime (`DLL load failed while importing _cuvis_pyil`). The
+  `cu3s` extra keeps 0.6.4's win32 floor (`cuvis-il>=3.6.0,<3.7.0`); 3.6.0 publishes `win_amd64`,
+  `manylinux_2_35_x86_64` and `manylinux_2_35_aarch64` wheels (Python 3.10 and 3.11). CI tests and
+  publishes inside the `cuvis_pyil` 3.6.0 image.
 - **The published `cuvis-il` 3.6.0 wheels release the GIL**, so `read_threads` is reachable from
   a plain install for the first time; every earlier wheel held it. The runtime probe and its
   single-threaded fallback stay, since they are what makes one config safe on both bindings.
-- **Known limitation, removed in the next release:** on SDK 3.6.0 a process that never calls
-  `cuvis.init` processes on the host rather than the GPU, at roughly 260 ms per cube against
-  67 ms, and threading then buys almost nothing. This package does not yet initialize the SDK,
-  so a host application wanting the GPU path must call
-  `cuvis.init(cuvis.SdkSettings(force_gpu_mode="cuda"))` before constructing a DataModule.
 - Added a `bench` extra carrying the plotting and process-memory dependencies the scripts under
-  `benchmarks/` need; they previously relied on an undeclared ad-hoc environment.
+  `benchmarks/` need; the scripts locate the repository from their own path. The sdist no longer
+  ships `benchmarks/` (`MANIFEST.in`).
+
 ## 0.6.4 - 2026-09-17
 
 - Windows `cu3s` bindings are floored to the 3.6.0 Cuvis SDK. The `cuvis` wrapper ships

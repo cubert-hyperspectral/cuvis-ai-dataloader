@@ -269,10 +269,13 @@ Cubes per second delivered **onto the GPU**, one 940-frame session, `Raw`, RTX 4
   demoting either.
 - **It turns itself off** when the SDK or the device cannot support it, with a warning, and
   reads through host memory instead.
-- **It needs `cuvis` 3.6.0.0rc2 or newer**, which the `cu3s` extra already requires. rc1's
-  device-buffer path raises on first use (fixed upstream in cuvis.python#98), and
+- **It needs `cuvis` 3.6.0.0**, which the `cu3s` extra requires. The 3.6.0.0rc1 wrapper's
+  device-buffer path raised on first use (fixed upstream in cuvis.python#98), and
   `cuvis.cuda.capabilities()` does not catch that, since it probes the native symbols rather
   than the Python layer over them.
+- **A reader opened with `cuda_cubes: false` in a process that already switched to device
+  cubes** copies each cube back to host memory and warns once, since the SDK's switch is
+  process-wide and one-way; its callers keep getting numpy.
 
 ### NPZ (`npz_multi`)
 
