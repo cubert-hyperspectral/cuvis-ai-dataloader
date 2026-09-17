@@ -91,6 +91,15 @@ class Cu3sPrefetchReader(Cu3sCubeReader):
         finally:
             self._leases.put(session)
 
+    def read(self, mesu_index: int) -> dict:
+        """Read one measurement on a leased handle.
+
+        ``self.session`` is one of the pooled handles, so a plain read on it could share the
+        handle with a read the pool has in flight; going through the lease queue rules that
+        out whatever thread calls this.
+        """
+        return self._leased_read(mesu_index)
+
     @property
     def wavelengths_nm(self) -> np.ndarray:
         """Per-channel wavelengths, on a leased handle so it cannot race a batch read."""

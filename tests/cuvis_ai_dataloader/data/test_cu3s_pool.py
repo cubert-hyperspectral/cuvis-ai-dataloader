@@ -270,3 +270,24 @@ def test_sampler_drop_last_discards_only_the_short_batch():
     batches = list(sampler)
     assert len(sampler) == 2
     assert [len(b) for b in batches] == [2, 2]
+
+
+# ------------------------------------------------------------------ read() leases a handle
+def test_read_goes_through_the_lease_queue(mock_cuvis_sdk, cu3s, monkeypatch):
+    """self.session is a pooled handle, so a bare read on it could share it with an in-flight
+    pooled read; read() must borrow a handle like every other read and give it back."""
+    reader = Cu3sPrefetchReader(cu3s, threads=3)
+    try:
+        leased: list[int] = []
+        original = Cu3sPrefetchReader._leased_read
+        monkeypatch.setattr(
+            Cu3sPrefetchReader,
+            "_leased_read",
+            lambda self, i: (leased.append(i), original(self, i))[1],
+        )
+        before = reader._leases.qsize()
+        assert reader.read(2)["mesu_index"] == 2
+        assert leased == [2]
+        assert reader._leases.qsize() == before  # the handle went back to the pool
+    finally:
+        reader.close()

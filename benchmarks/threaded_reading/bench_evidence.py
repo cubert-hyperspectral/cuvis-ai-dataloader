@@ -55,10 +55,16 @@ cuvis.init(cuvis.SdkSettings(force_gpu_mode=GPU_MODE), global_loglevel=logging.W
 
 def vram_mib():
     try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout.strip().splitlines()[0]
+        out = (
+            subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            .stdout.strip()
+            .splitlines()[0]
+        )
         return int(out)
     except Exception:
         return -1
@@ -115,11 +121,18 @@ reference = {i: digest(plain.read(i)["cube"]) for i in range(WINDOW)}
 result["releases_gil"] = bool(cuvis_releases_gil(lambda: plain.read(0)))
 
 base_fps, base_runs, _ = repeated_fps(plain.read_many, [order])
-result["scaling"].append({
-    "threads": 1, "fps": round(base_fps, 2), "scaling": 1.0, "setup_s": setup_1,
-    "fps_runs": [round(r, 2) for r in base_runs],
-    "vram_mib": vram_mib() - VRAM0, "rss_gb": rss_gb(), "wrong_cubes": 0,
-})
+result["scaling"].append(
+    {
+        "threads": 1,
+        "fps": round(base_fps, 2),
+        "scaling": 1.0,
+        "setup_s": setup_1,
+        "fps_runs": [round(r, 2) for r in base_runs],
+        "vram_mib": vram_mib() - VRAM0,
+        "rss_gb": rss_gb(),
+        "wrong_cubes": 0,
+    }
+)
 plain.close()
 print(f"releases_gil={result['releases_gil']}  threads=1 {base_fps:.2f} fps setup {setup_1}s")
 
@@ -133,10 +146,14 @@ for threads in THREADS:
         fps, runs, items = repeated_fps(reader.read_many, [order])
         wrong = sum(1 for i, item in zip(order, items) if digest(item["cube"]) != reference[i])
         row = {
-            "threads": threads, "fps": round(fps, 2),
-            "scaling": round(fps / base_fps, 2), "setup_s": setup_s,
+            "threads": threads,
+            "fps": round(fps, 2),
+            "scaling": round(fps / base_fps, 2),
+            "setup_s": setup_s,
             "fps_runs": [round(r, 2) for r in runs],
-            "vram_mib": vram_mib() - VRAM0, "rss_gb": rss_gb(), "wrong_cubes": wrong,
+            "vram_mib": vram_mib() - VRAM0,
+            "rss_gb": rss_gb(),
+            "wrong_cubes": wrong,
         }
     except Exception as exc:
         row = {"threads": threads, "error": f"{type(exc).__name__}: {exc}"}
@@ -152,8 +169,13 @@ try:
     for batch in BATCHES:
         chunks = [order[i : i + batch] for i in range(0, len(order), batch)]
         fps, runs, _ = repeated_fps(reader.read_many, chunks)
-        row = {"batch_size": batch, "read_threads": 8, "fps": round(fps, 2),
-               "scaling": round(fps / base_fps, 2), "fps_runs": [round(r, 2) for r in runs]}
+        row = {
+            "batch_size": batch,
+            "read_threads": 8,
+            "fps": round(fps, 2),
+            "scaling": round(fps / base_fps, 2),
+            "fps_runs": [round(r, 2) for r in runs],
+        }
         result["batch_size"].append(row)
         print(row)
 finally:
