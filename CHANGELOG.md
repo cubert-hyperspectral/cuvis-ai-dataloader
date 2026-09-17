@@ -3,6 +3,14 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.6.4 - 2026-09-17
+
+- Windows `cu3s` bindings are floored to the 3.6.0 Cuvis SDK. The `cuvis` wrapper ships
+  no native DLLs and loads them from the machine-wide SDK (`%CUVIS%`), so the binding
+  version must match the installed DLLs. The old `cuvis-il<3.5.4` win32 cap left 3.5.3.2
+  bindings loading the 3.6.0 DLLs the CuvisNEXT installer ships, a minor-version skew;
+  the `cu3s` extra now pins `cuvis>=3.6.0` and `cuvis-il>=3.6.0,<3.7.0` on win32.
+
 ## 0.6.3 - 2026-09-10
 
 - `cu3s` folder mode opens only the recordings a run actually uses. A new `files` param
