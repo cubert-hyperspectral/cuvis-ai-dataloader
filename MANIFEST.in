@@ -1,0 +1,4 @@
+# The sdist otherwise ships every git-tracked file (setuptools-scm's file finder).
+# The benchmark evidence (charts, raw results, harness scripts) is documentation for
+# the repository, not for the package.
+prune benchmarks

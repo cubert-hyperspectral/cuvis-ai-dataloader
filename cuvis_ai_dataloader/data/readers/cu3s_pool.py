@@ -43,7 +43,6 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
-import numpy as np
 from loguru import logger
 from torch.utils.data import Sampler
 
@@ -123,11 +122,6 @@ class Cu3sPrefetchReader(Cu3sCubeReader):
         out whatever thread calls this.
         """
         return self._leased_read(mesu_index)
-
-    @property
-    def wavelengths_nm(self) -> np.ndarray:
-        """Per-channel wavelengths, on a leased handle so it cannot race a batch read."""
-        return self._leased_read(0)["wavelengths"]
 
     def iter_reads(self, indices: Iterable[int]) -> Iterator[dict]:
         """Yield one read per index, in order, with at most ``queue_depth`` in flight.
@@ -229,6 +223,7 @@ class Cu3sReaderCache:
         sources: int = 1,
         coherent: bool = False,
         sdk_cuda: bool = True,
+        cuda_cubes: bool = False,
     ) -> None:
         if max_open_sessions < 1:
             raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
@@ -236,6 +231,7 @@ class Cu3sReaderCache:
             raise ValueError(f"read_threads must be >= 0, got {read_threads}")
         self._processing_mode = processing_mode
         self._sdk_cuda = bool(sdk_cuda)
+        self._cuda_cubes = bool(cuda_cubes)
         self._max_open = min(int(max_open_sessions), max(1, int(sources)))
         # With source-coherent batches a batch reads one recording, so cross-file overlap
         # cannot carry the budget and the whole of it belongs inside each file (at a cost of
@@ -278,6 +274,7 @@ class Cu3sReaderCache:
             read_threads=self._per_file_threads,
             processing_mode=self._processing_mode,
             sdk_cuda=self._sdk_cuda,
+            cuda_cubes=self._cuda_cubes,
         )
         self._readers[source] = reader
         return reader

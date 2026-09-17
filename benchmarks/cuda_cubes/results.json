@@ -1,0 +1,108 @@
+{
+  "session": "D:\\Measurements\\hbf\\Auto_013+01.cu3s",
+  "mode": "Raw",
+  "iters": 24,
+  "repeats": 5,
+  "window": 10,
+  "sdk_version": "CUBERT SDK v. 3.6.0 build: dfcc3e3cea7272d73d07a7f5bf2f26202ec1fc57",
+  "cuvis_wrapper_version": "3.6.0.0rc2 c9da3baa8af4c0b67ff7e7c12cd3113c1934f95a",
+  "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+  "rows": [
+    {
+      "cuda_cubes": false,
+      "threads": 1,
+      "fps": 15.51,
+      "fps_runs": [
+        14.71,
+        14.96,
+        15.71,
+        15.59,
+        15.51
+      ]
+    },
+    {
+      "cuda_cubes": false,
+      "threads": 2,
+      "fps": 24.08,
+      "fps_runs": [
+        24.62,
+        23.75,
+        24.08,
+        24.09,
+        23.47
+      ]
+    },
+    {
+      "cuda_cubes": false,
+      "threads": 4,
+      "fps": 34.33,
+      "fps_runs": [
+        35.38,
+        34.52,
+        33.88,
+        34.33,
+        32.48
+      ]
+    },
+    {
+      "cuda_cubes": false,
+      "threads": 8,
+      "fps": 37.94,
+      "fps_runs": [
+        37.94,
+        40.75,
+        37.57,
+        36.79,
+        40.92
+      ]
+    },
+    {
+      "cuda_cubes": true,
+      "threads": 1,
+      "fps": 24.08,
+      "fps_runs": [
+        22.75,
+        24.18,
+        24.08,
+        24.12,
+        22.02
+      ]
+    },
+    {
+      "cuda_cubes": true,
+      "threads": 2,
+      "fps": 45.32,
+      "fps_runs": [
+        41.34,
+        45.32,
+        45.42,
+        45.42,
+        44.93
+      ]
+    },
+    {
+      "cuda_cubes": true,
+      "threads": 4,
+      "fps": 74.36,
+      "fps_runs": [
+        73.28,
+        77.11,
+        74.37,
+        74.36,
+        72.2
+      ]
+    },
+    {
+      "cuda_cubes": true,
+      "threads": 8,
+      "fps": 84.07,
+      "fps_runs": [
+        84.07,
+        74.65,
+        72.5,
+        84.35,
+        84.69
+      ]
+    }
+  ]
+}

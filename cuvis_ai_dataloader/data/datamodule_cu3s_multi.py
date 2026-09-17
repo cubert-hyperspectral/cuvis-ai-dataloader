@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_schemas.training.data import SampleRef
 
-from ._extras import accepts_data_config, configure_cuvis_sdk, parse_bool
+from ._extras import accepts_data_config, parse_cu3s_reader_options
 from ._universe import parse_universe, validate_universe_csv_param
 from .readers.cu3s_pool import Cu3sReaderCache, SourceCoherentBatchSampler
 from .readers.cu3s_reader import count_measurements
@@ -51,6 +51,7 @@ class _MultiCu3sDataset(Dataset):
         read_threads: int = 0,
         source_coherent_batches: bool = False,
         sdk_cuda: bool = True,
+        cuda_cubes: bool = False,
     ) -> None:
         self._rows = rows
         self._processing_mode = processing_mode
@@ -61,6 +62,7 @@ class _MultiCu3sDataset(Dataset):
             sources=len({rec["materialized_path"] for rec in rows}) or 1,
             coherent=source_coherent_batches,
             sdk_cuda=sdk_cuda,
+            cuda_cubes=cuda_cubes,
         )
         self._labelers: dict[str, Any] = {}
 
@@ -165,6 +167,9 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         # Process cubes on the GPU. Off means the SDK's 'host' mode, roughly 4x slower per
         # cube. On a machine without CUDA the SDK falls back to the host on its own.
         sdk_cuda: Any = True,
+        # Hand out cubes as device-resident torch tensors instead of copying them to host
+        # memory for torch to copy straight back. Needs sdk_cuda and num_workers=0.
+        cuda_cubes: Any = False,
     ) -> None:
         super().__init__(
             splits=splits,
@@ -174,27 +179,19 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         )
         if not universe_csv:
             raise ValueError("cu3s_multi requires 'universe_csv'.")
-        self.max_open_sessions = int(max_open_sessions)
-        if self.max_open_sessions < 1:
-            raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
-        self.read_threads = int(read_threads)
-        if self.read_threads < 0:
-            raise ValueError(f"read_threads must be >= 0, got {read_threads}")
-        self.source_coherent_batches = bool(source_coherent_batches)
-        self.sdk_cuda = parse_bool(sdk_cuda, key="sdk_cuda")
-        # Recorded before anything can open a session, since the SDK fixes its device at the
-        # first init of a process and ignores every later one.
-        configure_cuvis_sdk(cuda=self.sdk_cuda)
-        # Process workers each build their own sessions and their own ProcessingContext, so
-        # combining them multiplies both the handle count and the ~9 s context build. The
-        # failure mode is an OOM or a killed CUDA process, not a slowdown, so refuse rather
-        # than silently override either knob.
-        if self.read_threads > 1 and int(num_workers) > 0:
-            raise ValueError(
-                f"read_threads={read_threads} cannot be combined with num_workers="
-                f"{num_workers}; reader threads replace DataLoader worker processes, so set "
-                "num_workers=0 to use them."
-            )
+        options = parse_cu3s_reader_options(
+            max_open_sessions=max_open_sessions,
+            read_threads=read_threads,
+            source_coherent_batches=source_coherent_batches,
+            sdk_cuda=sdk_cuda,
+            cuda_cubes=cuda_cubes,
+            num_workers=num_workers,
+        )
+        self.max_open_sessions = options.max_open_sessions
+        self.read_threads = options.read_threads
+        self.source_coherent_batches = options.source_coherent_batches
+        self.sdk_cuda = options.sdk_cuda
+        self.cuda_cubes = options.cuda_cubes
         self._universe_csv = Path(universe_csv).resolve()
         self._processing_mode = processing_mode
         self._predict_split = split  # which CSV split predict_dataloader iterates (module-owned)
@@ -332,6 +329,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             read_threads=self.read_threads,
             source_coherent_batches=self.source_coherent_batches,
             sdk_cuda=self.sdk_cuda,
+            cuda_cubes=self.cuda_cubes,
         )
 
     def _validate_read_indices(self, rows: list[dict[str, Any]]) -> None:

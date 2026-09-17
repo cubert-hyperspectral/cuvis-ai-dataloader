@@ -27,7 +27,7 @@ import os
 import numpy as np
 import pytest
 
-from cuvis_ai_dataloader.data._extras import cuvis_releases_gil
+from cuvis_ai_dataloader.data._extras import configure_cuvis_sdk, cuvis_releases_gil
 from cuvis_ai_dataloader.data.readers.cu3s_pool import Cu3sPrefetchReader
 from cuvis_ai_dataloader.data.readers.cu3s_reader import Cu3sCubeReader
 
@@ -44,8 +44,22 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def gpu_processing():
+    """Process on the GPU, which is where the shared-context parity has to hold.
+
+    On SDK 3.6.0 a process that never asks for the GPU processes on the host, so without
+    this the tests below would validate the host path and say nothing about the device one.
+    """
+    pytest.importorskip("cuvis")
+    configure_cuvis_sdk(cuda=True)
+    from cuvis_ai_dataloader.data._extras import require_cuvis
+
+    require_cuvis()
+
+
 @pytest.fixture(scope="module")
-def reference_cubes():
+def reference_cubes(gpu_processing):
     """The first few cubes read one at a time, as the parity baseline."""
     pytest.importorskip("cuvis")
     reader = Cu3sCubeReader(_TARGET, processing_mode=_MODE)

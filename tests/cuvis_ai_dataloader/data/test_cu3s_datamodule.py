@@ -445,3 +445,35 @@ def test_source_coherent_batches_hand_the_reader_cache_the_whole_thread_budget(
     divided = Cu3sDataModule(data_dir=str(folder), frames="measurements", read_threads=4)
     divided.setup(stage="predict")
     assert divided.predict_ds._cache._per_file_threads == 1
+
+
+def test_samples_per_frame_with_coherent_batches_keeps_recordings_together(
+    mock_cuvis_sdk, tmp_path
+):
+    """The repeat wrapper hides the base dataset; the coherent sampler still has to see the
+    source of every repeated index, or its batches would mix recordings at random."""
+    from cuvis_ai_dataloader.data.readers.cu3s_pool import SourceCoherentBatchSampler
+
+    folder = _make_cu3s_folder(tmp_path, n=2)
+    first, second = (str(p) for p in sorted(folder.glob("*.cu3s")))
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        frames="measurements",
+        splits=DataSplitConfig(train=_fi(first, [0, 1, 2]) + _fi(second, [0, 1, 2])),
+        samples_per_frame=2,
+        batch_size=4,
+        num_workers=0,
+        source_coherent_batches=True,
+    )
+    dm.setup(stage="fit")
+    loader = dm.train_dataloader()
+    assert len(dm.train_ds) == 6
+    assert len(loader.dataset) == 12
+    sampler = loader.batch_sampler
+    assert isinstance(sampler, SourceCoherentBatchSampler)
+    assert len(sampler) == 3
+    sources = loader.dataset._base.sample_sources
+    batches = list(sampler)
+    assert sorted(i for batch in batches for i in batch) == list(range(12))
+    mixed = [b for b in batches if len({sources[i % len(sources)] for i in b}) > 1]
+    assert len(mixed) <= 1, "only the batch straddling the two recordings may mix them"
