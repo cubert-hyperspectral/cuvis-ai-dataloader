@@ -22,6 +22,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from typing import Any, NamedTuple
 
 from loguru import logger
 
@@ -252,3 +253,65 @@ def parse_str_list(s, *, key: str) -> list[str]:
     if isinstance(s, (list, tuple)):
         return [str(x).strip() for x in s]
     return [x.strip() for x in str(s).split(",") if x.strip()]
+
+
+class Cu3sReaderOptions(NamedTuple):
+    """The reader-side parameters both cu3s DataModules validate the same way."""
+
+    max_open_sessions: int
+    read_threads: int
+    source_coherent_batches: bool
+    sdk_cuda: bool
+    cuda_cubes: bool
+
+
+def parse_cu3s_reader_options(
+    *,
+    max_open_sessions: Any,
+    read_threads: Any,
+    source_coherent_batches: Any,
+    sdk_cuda: Any,
+    cuda_cubes: Any,
+    num_workers: Any,
+) -> Cu3sReaderOptions:
+    """Validate the reader-side parameters of a cu3s DataModule and record the SDK device.
+
+    Shared by ``Cu3sDataModule`` and ``MultiCu3sDataModule`` so the two cannot drift on a
+    guard or a message. Every refusal names the parameters involved, and the SDK device is
+    recorded only once the whole set is acceptable, so a rejected module leaves no trace.
+    """
+    open_sessions = int(max_open_sessions)
+    if open_sessions < 1:
+        raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
+    threads = int(read_threads)
+    if threads < 0:
+        raise ValueError(f"read_threads must be >= 0, got {read_threads}")
+    coherent = bool(source_coherent_batches)
+    cuda = parse_bool(sdk_cuda, key="sdk_cuda")
+    device_cubes = parse_bool(cuda_cubes, key="cuda_cubes")
+    # A device-resident cube only exists when the SDK processed it on the device, and a
+    # CUDA tensor cannot be handed across the worker queue, so neither is a silent demotion.
+    if device_cubes and not cuda:
+        raise ValueError(
+            "cuda_cubes=True requires sdk_cuda=True; the SDK has no device buffer to "
+            "hand out when it processes on the host."
+        )
+    if device_cubes and int(num_workers) > 0:
+        raise ValueError(
+            f"cuda_cubes=True cannot be combined with num_workers={num_workers}; CUDA "
+            "tensors are not sent across DataLoader worker processes, so set num_workers=0."
+        )
+    # Process workers each build their own sessions and their own ProcessingContext, so
+    # combining them multiplies both the handle count and the ~9 s context build. The
+    # failure mode is an OOM or a killed CUDA process, not a slowdown, so refuse instead
+    # of silently overriding either knob.
+    if threads > 1 and int(num_workers) > 0:
+        raise ValueError(
+            f"read_threads={read_threads} cannot be combined with num_workers="
+            f"{num_workers}; reader threads replace DataLoader worker processes, so set "
+            "num_workers=0 to use them."
+        )
+    # Recorded before anything can open a session, since the SDK fixes its device at the
+    # first init of a process and ignores every later one.
+    configure_cuvis_sdk(cuda=cuda)
+    return Cu3sReaderOptions(open_sessions, threads, coherent, cuda, device_cubes)

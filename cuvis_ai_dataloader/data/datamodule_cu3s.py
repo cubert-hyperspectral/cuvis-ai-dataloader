@@ -53,8 +53,8 @@ from cuvis_ai_schemas.training.data import DataSplitConfig, SampleRef, SelectorK
 
 from ._extras import (
     accepts_data_config,
-    configure_cuvis_sdk,
     parse_bool,
+    parse_cu3s_reader_options,
     parse_int_list,
     parse_str_list,
 )
@@ -257,9 +257,14 @@ class _Cu3sRefDataset(Dataset):
             item.update(self._labeler_for(ref.annotation).load_for(int(image_id), item))
         return item
 
+    @staticmethod
+    def _position(ref: SampleRef) -> int:
+        """The measurement a ref reads; a ref without an index reads the file's first."""
+        return ref.index if ref.index is not None else 0
+
     def __getitem__(self, idx: int) -> dict:
         ref = self._refs[idx]
-        read_pos = ref.index if ref.index is not None else 0
+        read_pos = self._position(ref)
         return self._decorate(ref, read_pos, self._cache.get(ref.source).read(read_pos))
 
     def __getitems__(self, indices: list[int]) -> list[dict]:
@@ -270,7 +275,7 @@ class _Cu3sRefDataset(Dataset):
         the readers' threads can be used; parallelism is therefore bounded by ``batch_size``.
         """
         refs = [self._refs[i] for i in indices]
-        positions = [(ref.source, ref.index if ref.index is not None else 0) for ref in refs]
+        positions = [(ref.source, self._position(ref)) for ref in refs]
         return [
             self._decorate(ref, position, item)
             for ref, (_, position), item in zip(refs, positions, self._cache.read_many(positions))
@@ -362,40 +367,19 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             if isinstance(measurement_indices, str)
             else measurement_indices
         )
-        self.max_open_sessions = int(max_open_sessions)
-        if self.max_open_sessions < 1:
-            raise ValueError(f"max_open_sessions must be >= 1, got {max_open_sessions}")
-        self.read_threads = int(read_threads)
-        if self.read_threads < 0:
-            raise ValueError(f"read_threads must be >= 0, got {read_threads}")
-        self.source_coherent_batches = bool(source_coherent_batches)
-        self.sdk_cuda = parse_bool(sdk_cuda, key="sdk_cuda")
-        self.cuda_cubes = parse_bool(cuda_cubes, key="cuda_cubes")
-        # A device-resident cube only exists when the SDK processed it on the device, and a
-        # CUDA tensor cannot be handed across the worker queue, so neither is a silent demotion.
-        if self.cuda_cubes and not self.sdk_cuda:
-            raise ValueError(
-                "cuda_cubes=True requires sdk_cuda=True; the SDK has no device buffer to "
-                "hand out when it processes on the host."
-            )
-        if self.cuda_cubes and int(num_workers) > 0:
-            raise ValueError(
-                f"cuda_cubes=True cannot be combined with num_workers={num_workers}; CUDA "
-                "tensors are not sent across DataLoader worker processes, so set num_workers=0."
-            )
-        # Recorded before anything can open a session, since the SDK fixes its device at the
-        # first init of a process and ignores every later one.
-        configure_cuvis_sdk(cuda=self.sdk_cuda)
-        # Process workers each build their own sessions and their own ProcessingContext, so
-        # combining them multiplies both the handle count and the ~9 s context build. The
-        # failure mode is an OOM or a killed CUDA process, not a slowdown, so refuse instead
-        # of silently overriding either knob.
-        if self.read_threads > 1 and int(num_workers) > 0:
-            raise ValueError(
-                f"read_threads={read_threads} cannot be combined with num_workers="
-                f"{num_workers}; reader threads replace DataLoader worker processes, so set "
-                "num_workers=0 to use them."
-            )
+        options = parse_cu3s_reader_options(
+            max_open_sessions=max_open_sessions,
+            read_threads=read_threads,
+            source_coherent_batches=source_coherent_batches,
+            sdk_cuda=sdk_cuda,
+            cuda_cubes=cuda_cubes,
+            num_workers=num_workers,
+        )
+        self.max_open_sessions = options.max_open_sessions
+        self.read_threads = options.read_threads
+        self.source_coherent_batches = options.source_coherent_batches
+        self.sdk_cuda = options.sdk_cuda
+        self.cuda_cubes = options.cuda_cubes
         self._enum_labelers: dict[str, Any] = {}
 
     def _loader(self, dataset, *, shuffle: bool, name: str) -> DataLoader:
