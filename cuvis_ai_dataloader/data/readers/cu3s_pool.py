@@ -7,6 +7,29 @@ The topology here is the one measured free of wrong cubes: N ``SessionFile`` han
 file with a single ``ProcessingContext`` shared between them. A context carries its
 originating session's calibration and references, so it is per file and never shared
 across files.
+
+::
+
+    Cu3sPrefetchReader(path, threads=N)
+    +------------------------------------------------------------------+
+    |  SessionFile #0 (self.session) --+                               |
+    |  SessionFile #1                  +-- all share ONE               |
+    |  ...                             |   ProcessingContext           |
+    |  SessionFile #N-1 ---------------+   (session._pc = self.pc)     |
+    |             | put / get                                          |
+    |       lease queue (SimpleQueue) <---- ThreadPoolExecutor(N)      |
+    |             |                             ^  submit(_leased_read)|
+    |  read(i) ---+-- _leased_read(i) --> _read_with(session, i)       |
+    |                                                                  |
+    |  iter_reads(indices): deque of <= N+2 futures, popleft().result()|
+    |                       -> order preserved, <= N+2 cubes in RAM    |
+    +------------------------------------------------------------------+
+    Cu3sReaderCache: LRU(max_open_sessions) of readers, close-on-evict.
+      budget per file = read_threads                     if coherent batches
+                      = read_threads // min(max_open, sources)  otherwise (warns if < 2)
+      cross-file overlap on an outer pool of min(max_open, read_threads);
+      a failed group waits for its siblings before raising, so no eviction
+      closes a reader another group is still reading from.
 """
 
 from __future__ import annotations
