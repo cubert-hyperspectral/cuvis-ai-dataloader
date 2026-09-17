@@ -5,7 +5,7 @@ processed, so the device and host reads run in separate interpreters.
 
 Gated and skipped by default (CI has neither the SDK nor sample data)::
 
-    export CUVIS_AI_IT_TARGET=/path/to/scene.cu3s   # needs >= 12 measurements
+    export CUVIS_AI_IT_TARGET=/path/to/scene.cu3s   # needs >= 4 measurements
     # optional: CUVIS_AI_IT_MODE (default Raw, avoids needing references)
     pytest -m integration \
         tests/cuvis_ai_dataloader/data/test_cuda_cubes_integration.py
@@ -21,6 +21,9 @@ import textwrap
 
 import numpy as np
 import pytest
+import torch
+
+from cuvis_ai_dataloader.data.readers.cu3s_pool import open_reader
 
 _TARGET = os.environ.get("CUVIS_AI_IT_TARGET")
 _MODE = os.environ.get("CUVIS_AI_IT_MODE", "Raw")
@@ -56,10 +59,10 @@ _CHILD = textwrap.dedent(
         np.save(out, cube.cpu().numpy() if is_cuda else np.asarray(cube))
         del cube
         # 30 reads never held at once: a buffer that is not returned to the SDK's pool
-        # shows up here as steady growth.
+        # shows up here as steady growth. The reads cycle over the frames the file has.
         settled = vram()
-        for index in range(2, 32):
-            held = reader.read(index)["cube"]
+        for step in range(30):
+            held = reader.read(2 + step % (reader.total_measurements - 2))["cube"]
             del held
         growth = vram() - settled
     print("RESULT" + json.dumps(
@@ -111,3 +114,35 @@ def test_device_buffers_are_returned_to_the_sdk(modes):
     """
     growth = modes["on"]["vram_growth_mib"]
     assert growth < 256, f"VRAM grew {growth} MiB over 30 reads; buffers are not being freed"
+
+
+# ---------------------------------------------------------- in-process: threads + retention
+def _host_cubes(indices):
+    """Cubes through the host path in this process, copied out of the reader."""
+    with open_reader(_TARGET, processing_mode=_MODE) as reader:
+        return [np.array(reader.read(i)["cube"], copy=True) for i in indices]
+
+
+def test_threaded_device_cubes_match_the_host_path():
+    """The pool and the device path together: every leased handle hands out the same cube the
+    host path produces, on the device, in the requested order."""
+    reference = _host_cubes(range(4))
+    with open_reader(_TARGET, read_threads=4, processing_mode=_MODE, cuda_cubes=True) as reader:
+        assert reader.cuda_cubes, "device mode was requested but fell back"
+        items = reader.read_many(range(4))
+        for expected, item in zip(reference, items):
+            assert item["cube"].is_cuda
+            assert np.array_equal(item["cube"].cpu().numpy(), expected)
+
+
+def test_a_retained_device_tensor_survives_later_reads_and_the_reader_closing():
+    """DLPack ties the buffer to the tensor: a cube kept from an earlier batch must still hold
+    its values after the SDK has produced thirty more and the reader is gone."""
+    with open_reader(_TARGET, processing_mode=_MODE, cuda_cubes=True) as reader:
+        assert reader.cuda_cubes, "device mode was requested but fell back"
+        held = reader.read(1)["cube"]
+        snapshot = held.clone()
+        for step in range(30):
+            reader.read(2 + step % (reader.total_measurements - 2))
+    torch.cuda.synchronize()
+    assert torch.equal(held, snapshot)
