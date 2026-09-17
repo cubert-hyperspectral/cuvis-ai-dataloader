@@ -25,7 +25,8 @@ uses semantic versioning.
 - **The first `cuvis.init` of a process wins.** The SDK fixes its device there and silently ignores
   every later one, returning success either way, so a host application that already initialized the
   SDK keeps its own choice and a second, conflicting `sdk_cuda` warns instead of pretending to
-  switch. A machine without CUDA is unaffected: the SDK falls back to the host by itself.
+  switch; two DataModules disagreeing before the first SDK call warn as well, and the later one
+  wins. A machine without CUDA is unaffected: the SDK falls back to the host by itself.
 
 ## 0.7.0 - 2026-09-12
 

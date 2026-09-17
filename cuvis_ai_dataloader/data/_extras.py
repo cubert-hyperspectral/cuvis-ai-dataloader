@@ -66,7 +66,9 @@ def configure_cuvis_sdk(*, cuda: bool) -> None:
     The SDK fixes its device at the **first** ``cuvis.init`` of a process and silently ignores
     every later one -- it returns success and keeps the original device -- so a second,
     conflicting choice cannot take effect and warns instead of pretending. For the same reason
-    a host application that initialized the SDK itself keeps whatever it chose.
+    a host application that initialized the SDK itself keeps whatever it chose. Before the
+    first SDK call the later request wins, and a disagreement warns too: the last-constructed
+    DataModule would otherwise pick the device for every other one in the process in silence.
     """
     global _requested_gpu_mode
     mode = "cuda" if cuda else "host"
@@ -78,6 +80,14 @@ def configure_cuvis_sdk(*, cuda: bool) -> None:
             mode,
         )
         return
+    if _requested_gpu_mode is not None and mode != _requested_gpu_mode:
+        logger.warning(
+            "cuvis SDK device requested as '{}' after an earlier request for '{}'; the SDK is "
+            "initialized once per process, so '{}' is what every reader in this process gets.",
+            mode,
+            _requested_gpu_mode,
+            mode,
+        )
     _requested_gpu_mode = mode
 
 

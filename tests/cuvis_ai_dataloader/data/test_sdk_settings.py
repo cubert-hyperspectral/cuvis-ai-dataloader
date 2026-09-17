@@ -10,6 +10,7 @@ from __future__ import annotations
 import pickle
 
 import pytest
+from loguru import logger
 
 from cuvis_ai_dataloader.data import _extras
 from cuvis_ai_dataloader.data._extras import configure_cuvis_sdk, require_cuvis
@@ -78,6 +79,41 @@ def test_a_conflicting_second_choice_warns_and_does_not_reinitialize(mock_cuvis_
     assert cuvis.init.call_count == 1
     assert _gpu_mode_of(cuvis) == "cuda"
     assert _extras._applied_gpu_mode == "cuda"
+
+
+def _warnings_during(fn):
+    """Loguru WARNING messages emitted while ``fn`` runs."""
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        fn()
+    finally:
+        logger.remove(sink)
+    return messages
+
+
+def test_a_disagreement_before_the_first_init_warns_and_the_later_request_wins(mock_cuvis_sdk):
+    """Nothing has reached the SDK yet, so the later choice can still take effect; letting it
+    win silently would make the last-constructed DataModule decide for the whole process."""
+    import cuvis
+
+    def disagree():
+        configure_cuvis_sdk(cuda=True)
+        configure_cuvis_sdk(cuda=False)
+
+    messages = _warnings_during(disagree)
+    assert any("after an earlier request for 'cuda'" in m for m in messages), messages
+    require_cuvis()
+    assert cuvis.init.call_count == 1
+    assert _gpu_mode_of(cuvis) == "host"
+
+
+def test_repeating_the_same_choice_before_the_first_init_does_not_warn(mock_cuvis_sdk):
+    def agree():
+        configure_cuvis_sdk(cuda=True)
+        configure_cuvis_sdk(cuda=True)
+
+    assert not _warnings_during(agree)
 
 
 def test_repeating_the_same_choice_is_not_a_conflict(mock_cuvis_sdk):
