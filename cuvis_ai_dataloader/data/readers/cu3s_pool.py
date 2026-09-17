@@ -16,6 +16,7 @@ import queue
 import random
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Iterable, Iterator, Sequence
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
@@ -210,6 +211,7 @@ class Cu3sReaderCache:
         self._outer_size = min(self._max_open, int(read_threads)) if read_threads else 0
         self._readers: OrderedDict[str, Cu3sCubeReader] = OrderedDict()
         self._outer: ThreadPoolExecutor | None = None
+        self._evictions = 0
 
     def __getstate__(self) -> dict:
         # Native handles and thread pools do not pickle; a DataLoader worker reopens lazily.
@@ -222,8 +224,9 @@ class Cu3sReaderCache:
             self._readers.move_to_end(source)
             return reader
         while len(self._readers) >= self._max_open:
-            _, evicted = self._readers.popitem(last=False)
+            evicted_source, evicted = self._readers.popitem(last=False)
             evicted.close()
+            self._note_eviction(evicted_source, source)
         reader = open_reader(
             source,
             read_threads=self._per_file_threads,
@@ -231,6 +234,23 @@ class Cu3sReaderCache:
         )
         self._readers[source] = reader
         return reader
+
+    def _note_eviction(self, evicted: str, incoming: str) -> None:
+        """Say once that the cache is cycling recordings.
+
+        Every eviction rebuilds a ProcessingContext, about 13 s on the GPU, and nothing else
+        reports it: an epoch over more recordings than the cache holds open just runs slowly.
+        """
+        if self._evictions == 0:
+            logger.warning(
+                "cu3s reader cache is full ({} open sessions): closing {} to open {}. Every such "
+                "eviction rebuilds a ProcessingContext (about 13 s). Raise max_open_sessions, or "
+                "set source_coherent_batches=True so a batch stays inside one recording.",
+                self._max_open,
+                Path(evicted).name,
+                Path(incoming).name,
+            )
+        self._evictions += 1
 
     def read_many(self, positions: Sequence[tuple[str, int]]) -> list[dict]:
         """Read ``(source, index)`` pairs, keeping the caller's order.

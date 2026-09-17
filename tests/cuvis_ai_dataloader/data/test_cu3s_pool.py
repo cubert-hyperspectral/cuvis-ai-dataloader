@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from loguru import logger
 
 from cuvis_ai_dataloader.data.readers.cu3s_pool import (
     Cu3sPrefetchReader,
@@ -324,5 +325,34 @@ def test_a_failing_group_waits_for_its_siblings_before_raising(
         with pytest.raises(RuntimeError, match="sdk said no"):
             cache.read_many([(paths[0], 0), (paths[1], 1)])
         assert "sibling done" in events, "the error surfaced while a sibling was still reading"
+    finally:
+        cache.close()
+
+
+# ----------------------------------------------------------------------- eviction warning
+def _warnings_during(fn):
+    """Loguru WARNING messages emitted while ``fn`` runs, plus its result."""
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        result = fn()
+    finally:
+        logger.remove(sink)
+    return result, messages
+
+
+def test_cache_warns_once_when_it_starts_evicting(mock_cuvis_sdk, tmp_path):
+    paths = []
+    for name in ("a", "b", "c"):
+        path = tmp_path / f"{name}.cu3s"
+        path.write_bytes(b"")
+        paths.append(str(path))
+    cache = Cu3sReaderCache(processing_mode=None, max_open_sessions=1, sources=3)
+    try:
+        _, messages = _warnings_during(lambda: [cache.get(p) for p in paths + paths])
+        evictions = [m for m in messages if "reader cache is full" in m]
+        assert len(evictions) == 1, messages
+        assert "max_open_sessions" in evictions[0] and "source_coherent_batches" in evictions[0]
+        assert cache._evictions == 5
     finally:
         cache.close()
