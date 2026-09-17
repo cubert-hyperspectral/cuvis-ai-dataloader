@@ -43,7 +43,6 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
-import numpy as np
 from loguru import logger
 from torch.utils.data import Sampler
 
@@ -123,11 +122,6 @@ class Cu3sPrefetchReader(Cu3sCubeReader):
         out whatever thread calls this.
         """
         return self._leased_read(mesu_index)
-
-    @property
-    def wavelengths_nm(self) -> np.ndarray:
-        """Per-channel wavelengths, on a leased handle so it cannot race a batch read."""
-        return self._leased_read(0)["wavelengths"]
 
     def iter_reads(self, indices: Iterable[int]) -> Iterator[dict]:
         """Yield one read per index, in order, with at most ``queue_depth`` in flight.

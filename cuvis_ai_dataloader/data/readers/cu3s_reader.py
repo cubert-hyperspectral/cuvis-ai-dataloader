@@ -241,8 +241,12 @@ class Cu3sCubeReader:
 
     @property
     def wavelengths_nm(self) -> np.ndarray:
-        """Per-channel wavelengths (nm, int32) from the first measurement."""
-        return self.read(0)["wavelengths"]
+        """Per-channel wavelengths (nm, int32), captured from the first measurement at open.
+
+        Reading a cube to answer this would cost a full read (a device cube in cuda mode) on
+        every call; the wavelengths do not change within a recording.
+        """
+        return self.wavelengths
 
     def read(self, mesu_index: int) -> dict:
         """Return ``{"cube", "mesu_index", "wavelengths"}`` for one measurement.
