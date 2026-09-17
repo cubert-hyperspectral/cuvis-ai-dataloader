@@ -34,7 +34,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          apt-get update && apt-get install -y --no-install-recommends libgl1
+          apt-get update && apt-get install -y --no-install-recommends libgl1 curl ca-certificates
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
