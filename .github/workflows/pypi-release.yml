@@ -17,7 +17,7 @@ jobs:
     name: Build and validate package
     runs-on: ubuntu-latest
     container:
-      image: cubertgmbh/cuvis_pyil:3.5.0-ubuntu24.04
+      image: cubertgmbh/cuvis_pyil:3.6.0-ubuntu24.04
     steps:
       - uses: actions/checkout@v7
         with:
