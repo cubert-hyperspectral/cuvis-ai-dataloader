@@ -170,7 +170,9 @@ Things worth knowing before turning it on:
   rather than a gain, so the reader probes the binding once per process and falls back to
   single-threaded reads with a warning.
 - **Concurrency equals `batch_size`.** torch hands a dataset a whole batch of indices at once and
-  nothing earlier, so `batch_size: 1` gets no speedup however high `read_threads` is.
+  nothing earlier, so `batch_size: 1` gets no speedup from `read_threads` alone;
+  [`read_ahead`](#read-ahead-at-batch-1-read_ahead) is the lever there, and the module warns
+  when threads are configured at batch 1 without it.
 - **`num_workers` must be 0.** Worker processes each build their own sessions and their own
   processing context, so combining the two multiplies both; the module raises instead.
 - **`samples_per_frame > 1` disables it for the train loader only.** The repeat wrapper in
@@ -193,6 +195,58 @@ index it will read:
 ```bash
 cu3s-to-npz --cu3s X.cu3s --out-dir out --annotations sibling --read-threads 8
 ```
+
+### Read-ahead at batch 1 (`read_ahead`)
+
+`read_threads` overlaps the reads inside one batch, so a `batch_size: 1` loader (the CuvisNEXT
+training wizard's) gains nothing from it: torch asks the dataset for one frame at a time and
+Lightning never prefetches for a sized loader, so the SDK read of frame i+1 waits for the model
+step on frame i. `read_ahead` closes that gap. The module owns the loader's batch sampler,
+learns the epoch's order the moment torch draws it, and keeps up to `read_ahead` frames of that
+order in flight on reader threads while the model works on the current one. Off by default.
+
+```yaml
+data:
+  data_module: cu3s
+  batch_size: 1
+  num_workers: 0         # required; the read-ahead runs on reader threads in this process
+  params:
+    cu3s_file_path: X.cu3s
+    read_ahead: 2        # frames in flight ahead of the model step
+```
+
+What it costs and what to know:
+
+- **One whole cube per frame in flight.** A 1000x1080x61 Reflectance cube is about 264 MB, in
+  host memory, or in device memory with `cuda_cubes`. Two is the sensible depth on an 8 GB card;
+  the cap is 8.
+- **Handles follow the depth, not `read_threads`.** A read-ahead of depth k runs on a pool k
+  threads wide per recording (`read_threads` still wins when it is larger), so depth 1 opens no
+  extra handle and depth 2 one more (about 0.38 GB of RSS each).
+- **The order is exactly torch's.** With `shuffle=True` the sampler draws the same permutation a
+  plain loader would for the same seed, so a run reproduces frame for frame with `read_ahead` on
+  or off.
+- **A consumer that leaves the announced order is served synchronously.** A `__getitem__`
+  caller or an out-of-order fetch makes the plan stop looking ahead for that epoch and say so
+  once; no frame is ever handed out for the wrong index. An iterator dropped mid-epoch
+  (Lightning's two-batch sanity check, an early stop, a statistical pass that stops after its
+  first frames) releases the frames read ahead of it the moment torch lets go of the iterator,
+  so at most `read_ahead` reads are wasted and nothing lingers in memory until the next epoch.
+  A reader with reads in flight is never evicted from the cache, and the cache shrinks back to
+  `max_open_sessions` on its next access once those reads land.
+- **With `cuda_cubes`, the reading thread synchronizes the device before handing a cube over.**
+  The SDK's DLPack export carries no stream, so a device-wide `torch.cuda.synchronize` on the
+  reader thread is what orders the SDK's writes against the model's stream; depth 2 hides its
+  latency. Provisional until the SDK offers an event for its buffers.
+- **`num_workers` must be 0**, for the same reason as `read_threads`; the module raises.
+- **`samples_per_frame > 1` disables it for the train loader only** (the repeat wrapper in
+  `cuvis-ai-core` forwards neither the batched fetch nor the order); the loader warns.
+- **Not under DDP.** It replaces the loader's sampler, like `source_coherent_batches`, with which
+  it composes.
+- **Where the time goes.** On the CuvisNEXT wizard trainrun (RTX 5070 Ti, 1000x1080x61
+  Reflectance, batch 1) a training step took 0.24 s, of which the SDK read was about 0.10 s and
+  the cube's host round trip 0.06 s; the read-ahead overlaps the first, `cuda_cubes` removes the
+  second. The measured effect is in the changelog entry of the release that shipped it.
 
 ### SDK processing device (`sdk_cuda`)
 

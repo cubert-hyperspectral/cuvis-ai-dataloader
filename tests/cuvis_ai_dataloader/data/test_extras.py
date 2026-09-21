@@ -34,3 +34,60 @@ def test_require_helpers_return_modules():
     assert _extras.require_tifffile() is not None
     assert _extras.require_skimage_polygon2mask() is not None
     assert _extras.require_pycocotools() is not None
+
+
+# --------------------------------------------------------------- the reader options parser
+def _options(**overrides):
+    base = dict(
+        max_open_sessions=4,
+        read_threads=0,
+        source_coherent_batches=False,
+        sdk_cuda=False,
+        cuda_cubes=False,
+        num_workers=0,
+    )
+    base.update(overrides)
+    return _extras.parse_cu3s_reader_options(**base)
+
+
+def _warnings_during(fn):
+    from loguru import logger
+
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        result = fn()
+    finally:
+        logger.remove(sink)
+    return result, messages
+
+
+def test_read_ahead_is_off_unless_asked_for():
+    assert _options().read_ahead == 0
+
+
+def test_read_ahead_is_parsed_from_a_data_arg_string_and_capped():
+    assert _options(read_ahead="2").read_ahead == 2
+    with pytest.raises(ValueError, match="read_ahead must be >= 0"):
+        _options(read_ahead=-1)
+    with pytest.raises(ValueError, match="read_ahead must be <= 8"):
+        _options(read_ahead=9)
+
+
+def test_read_ahead_refuses_worker_processes():
+    with pytest.raises(ValueError, match="read_ahead=2 cannot be combined with num_workers=2"):
+        _options(read_ahead=2, num_workers=2)
+
+
+def test_idle_reader_threads_at_batch_one_warn_and_name_read_ahead():
+    # CuvisNEXT patches data.batch_size at fill time, so this is a runtime warning, not a
+    # yaml-only rule: threads without a batch or a read-ahead cost handles and buy nothing.
+    _, messages = _warnings_during(lambda: _options(read_threads=4, batch_size=1))
+    assert any("read_threads=4" in m and "read_ahead" in m for m in messages), messages
+    for quiet in (
+        dict(read_threads=4, batch_size=1, read_ahead=2),
+        dict(read_threads=4, batch_size=4),
+        dict(read_threads=0, batch_size=1),
+    ):
+        _, messages = _warnings_during(lambda quiet=quiet: _options(**quiet))
+        assert not any("read_ahead" in m for m in messages), (quiet, messages)

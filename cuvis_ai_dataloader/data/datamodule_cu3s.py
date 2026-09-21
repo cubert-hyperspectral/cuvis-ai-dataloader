@@ -58,8 +58,9 @@ from ._extras import (
     parse_int_list,
     parse_str_list,
 )
-from .readers.cu3s_pool import Cu3sReaderCache, SourceCoherentBatchSampler
+from .readers.cu3s_pool import Cu3sReaderCache
 from .readers.cu3s_reader import Cu3sCubeReader, count_measurements
+from .readers.read_ahead import ReadAheadPlan, build_loader
 
 #: Selector kinds that name their sources outright. Everything else (``all``,
 #: ``dir_indices``, ``stems``, ``glob``, ``tag``, ``categories``) is answered only by
@@ -180,6 +181,7 @@ class _Cu3sRefDataset(Dataset):
         source_coherent_batches: bool = False,
         sdk_cuda: bool = True,
         cuda_cubes: bool = False,
+        read_ahead: int = 0,
     ) -> None:
         self._refs = refs
         self._processing_mode = processing_mode
@@ -191,18 +193,25 @@ class _Cu3sRefDataset(Dataset):
             coherent=source_coherent_batches,
             sdk_cuda=sdk_cuda,
             cuda_cubes=cuda_cubes,
+            read_ahead=read_ahead,
         )
+        # Frames read ahead of the loader, in the order the sampler announces; None reads
+        # every batch when it is asked for.
+        self._plan = ReadAheadPlan(self._cache, read_ahead) if read_ahead > 0 else None
         self._labelers: dict[str, Any] = {}
 
     def __getstate__(self) -> dict:
         # Drop cached labelers before pickling to DataLoader workers; the reader cache drops
-        # its own native handles, which do not pickle.
+        # its own native handles, which do not pickle, and neither do futures in flight.
         state = self.__dict__.copy()
         state["_labelers"] = {}
+        state["_plan"] = None
         return state
 
     def close(self) -> None:
         """Release every cached SDK session (safe to call repeatedly)."""
+        if self._plan is not None:
+            self._plan.close()
         self._cache.close()
 
     def __del__(self) -> None:  # best-effort: replaced datasets free their sessions
@@ -262,6 +271,24 @@ class _Cu3sRefDataset(Dataset):
         """The measurement a ref reads; a ref without an index reads the file's first."""
         return ref.index if ref.index is not None else 0
 
+    def _key(self, ref: SampleRef) -> tuple[str, int]:
+        """What the reader cache reads a ref by: its recording and the measurement in it."""
+        return ref.source, self._position(ref)
+
+    def announce_order(self, indices: list[int]) -> None:
+        """Tell the read-ahead which samples this epoch will ask for, in order.
+
+        Called by the loader's batch sampler when torch draws an epoch's order. Without a
+        read-ahead it is a no-op, so a sampler may always call it.
+        """
+        if self._plan is not None:
+            self._plan.announce([self._key(self._refs[i]) for i in indices])
+
+    def release_read_ahead(self) -> None:
+        """Drop the frames read ahead of an epoch that ended or whose loader was dropped."""
+        if self._plan is not None:
+            self._plan.release()
+
     def __getitem__(self, idx: int) -> dict:
         ref = self._refs[idx]
         read_pos = self._position(ref)
@@ -271,14 +298,20 @@ class _Cu3sRefDataset(Dataset):
         """Fetch a whole batch at once, so the reader cache can overlap its reads.
 
         torch calls this in place of per-index ``__getitem__`` when a dataset defines it. It is
-        the only point at which several indices are known together, so it is the only place
-        the readers' threads can be used; parallelism is therefore bounded by ``batch_size``.
+        the only point at which several indices are known together, so without a read-ahead
+        it is the only place the readers' threads can be used and parallelism is bounded by
+        ``batch_size``; with one, the frames were announced earlier and may already be read.
         """
         refs = [self._refs[i] for i in indices]
-        positions = [(ref.source, self._position(ref)) for ref in refs]
+        positions = [self._key(ref) for ref in refs]
+        items = (
+            self._plan.take(positions)
+            if self._plan is not None
+            else self._cache.read_many(positions)
+        )
         return [
             self._decorate(ref, position, item)
-            for ref, (_, position), item in zip(refs, positions, self._cache.read_many(positions))
+            for ref, (_, position), item in zip(refs, positions, items)
         ]
 
 
@@ -333,6 +366,11 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         # Hand out cubes as device-resident torch tensors instead of copying them to host
         # memory for torch to copy straight back. Needs sdk_cuda and num_workers=0.
         cuda_cubes: Any = False,
+        # Frames to read ahead of the model step, on reader threads, in the order the epoch
+        # will ask for them. The lever for batch_size 1, where read_threads alone buys
+        # nothing. Each frame in flight is a whole cube in host (or, with cuda_cubes, device)
+        # memory. 0 disables; needs num_workers=0; not under DDP (it replaces the sampler).
+        read_ahead: Any = 0,
     ) -> None:
         super().__init__(
             splits=splits,
@@ -374,26 +412,29 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             sdk_cuda=sdk_cuda,
             cuda_cubes=cuda_cubes,
             num_workers=num_workers,
+            read_ahead=read_ahead,
+            batch_size=batch_size,
         )
         self.max_open_sessions = options.max_open_sessions
         self.read_threads = options.read_threads
         self.source_coherent_batches = options.source_coherent_batches
         self.sdk_cuda = options.sdk_cuda
         self.cuda_cubes = options.cuda_cubes
+        self.read_ahead = options.read_ahead
         self._enum_labelers: dict[str, Any] = {}
 
     def _loader(self, dataset, *, shuffle: bool, name: str) -> DataLoader:
-        """The base loader, or one whose batches stay within a recording when asked for."""
-        sources = getattr(getattr(dataset, "_base", dataset), "sample_sources", None)
-        if not self.source_coherent_batches or not sources:
-            return super()._loader(dataset, shuffle=shuffle, name=name)
-        # samples_per_frame wraps the dataset in a repeat whose index i reads base i % len,
-        # so repeating the base's source list reproduces that mapping exactly.
-        sources = list(sources) * max(1, len(dataset) // len(sources))
-        return DataLoader(
+        """The base loader, or one whose sampler this module owns (coherent batches, read-ahead)."""
+        base_loader = super()._loader
+        return build_loader(
             dataset,
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
-            batch_sampler=SourceCoherentBatchSampler(sources, self.batch_size, shuffle=shuffle),
+            shuffle=shuffle,
+            name=name,
+            source_coherent_batches=self.source_coherent_batches,
+            read_ahead=self.read_ahead,
+            plain=lambda: base_loader(dataset, shuffle=shuffle, name=name),
         )
 
     @staticmethod
@@ -656,6 +697,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             source_coherent_batches=self.source_coherent_batches,
             sdk_cuda=self.sdk_cuda,
             cuda_cubes=self.cuda_cubes,
+            read_ahead=self.read_ahead,
         )
 
     def category_name_to_id(self) -> dict[str, int] | None:

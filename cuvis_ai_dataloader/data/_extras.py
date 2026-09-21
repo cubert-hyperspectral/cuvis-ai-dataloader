@@ -255,6 +255,11 @@ def parse_str_list(s, *, key: str) -> list[str]:
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
 
+# Every frame read ahead is a whole cube (about 264 MB at 1000x1080x61 float32) held in host
+# or device memory until the model asks for it; the 8 GB laptops set this ceiling.
+MAX_READ_AHEAD = 8
+
+
 class Cu3sReaderOptions(NamedTuple):
     """The reader-side parameters both cu3s DataModules validate the same way."""
 
@@ -263,6 +268,7 @@ class Cu3sReaderOptions(NamedTuple):
     source_coherent_batches: bool
     sdk_cuda: bool
     cuda_cubes: bool
+    read_ahead: int = 0
 
 
 def parse_cu3s_reader_options(
@@ -273,12 +279,17 @@ def parse_cu3s_reader_options(
     sdk_cuda: Any,
     cuda_cubes: Any,
     num_workers: Any,
+    read_ahead: Any = 0,
+    batch_size: Any = 1,
 ) -> Cu3sReaderOptions:
     """Validate the reader-side parameters of a cu3s DataModule and record the SDK device.
 
     Shared by ``Cu3sDataModule`` and ``MultiCu3sDataModule`` so the two cannot drift on a
     guard or a message. Every refusal names the parameters involved, and the SDK device is
     recorded only once the whole set is acceptable, so a rejected module leaves no trace.
+    ``batch_size`` is only looked at, never changed: CuvisNEXT patches it into the trainrun at
+    fill time, so the one rule that depends on it is a warning here rather than a check on
+    the yaml.
     """
     open_sessions = int(max_open_sessions)
     if open_sessions < 1:
@@ -286,6 +297,14 @@ def parse_cu3s_reader_options(
     threads = int(read_threads)
     if threads < 0:
         raise ValueError(f"read_threads must be >= 0, got {read_threads}")
+    ahead = int(read_ahead)
+    if ahead < 0:
+        raise ValueError(f"read_ahead must be >= 0, got {read_ahead}")
+    if ahead > MAX_READ_AHEAD:
+        raise ValueError(
+            f"read_ahead must be <= {MAX_READ_AHEAD}, got {read_ahead}; every frame read ahead "
+            "is a whole cube held in memory until the model asks for it."
+        )
     coherent = bool(source_coherent_batches)
     cuda = parse_bool(sdk_cuda, key="sdk_cuda")
     device_cubes = parse_bool(cuda_cubes, key="cuda_cubes")
@@ -311,7 +330,24 @@ def parse_cu3s_reader_options(
             f"{num_workers}; reader threads replace DataLoader worker processes, so set "
             "num_workers=0 to use them."
         )
+    if ahead > 0 and int(num_workers) > 0:
+        raise ValueError(
+            f"read_ahead={read_ahead} cannot be combined with num_workers={num_workers}; the "
+            "read-ahead runs on reader threads inside the training process, so set "
+            "num_workers=0 to use it."
+        )
+    # torch hands a map-style dataset one batch of indices at a time, so at batch_size 1
+    # extra handles never read concurrently: they cost memory and buy nothing. A warning,
+    # not an error, because the batch size is decided at run time by the caller.
+    if threads > 1 and int(batch_size) == 1 and ahead == 0:
+        logger.warning(
+            "read_threads={} with batch_size=1 and no read_ahead opens {} session handles that "
+            "never read concurrently: torch asks for one frame at a time. Set read_ahead (frames "
+            "to read ahead of the model step) or raise batch_size.",
+            read_threads,
+            threads,
+        )
     # Recorded before anything can open a session, since the SDK fixes its device at the
     # first init of a process and ignores every later one.
     configure_cuvis_sdk(cuda=cuda)
-    return Cu3sReaderOptions(open_sessions, threads, coherent, cuda, device_cubes)
+    return Cu3sReaderOptions(open_sessions, threads, coherent, cuda, device_cubes, ahead)
