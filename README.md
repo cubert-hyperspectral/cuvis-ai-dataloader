@@ -212,14 +212,19 @@ data:
   num_workers: 0         # required; the read-ahead runs on reader threads in this process
   params:
     cu3s_file_path: X.cu3s
-    read_ahead: 2        # frames in flight ahead of the model step
+    read_ahead: 1        # frames in flight ahead of the model step
 ```
 
 What it costs and what to know:
 
 - **One whole cube per frame in flight.** A 1000x1080x61 Reflectance cube is about 264 MB, in
-  host memory, or in device memory with `cuda_cubes`. Two is the sensible depth on an 8 GB card;
-  the cap is 8.
+  host memory, or in device memory with `cuda_cubes`. Start at 1: on the CuvisNEXT wizard
+  trainrun one frame in flight hid most of the SDK read (training step 0.24 to 0.165 s) at no
+  extra device memory, and all of it with `cuda_cubes` (0.128 s at depth 1 and 2 alike). A
+  depth of 2 took the host-cube step to 0.151 s, worth 2 percent of that run because its
+  validation pass dominates each epoch, and opened four more handles. Raise the depth where
+  the training pass is what you are shortening, or where the read is longer than the model
+  step. The cap is 8.
 - **Handles follow the depth, not `read_threads`.** A read-ahead of depth k runs on a pool k
   threads wide per recording (`read_threads` still wins when it is larger), so depth 1 opens no
   extra handle and depth 2 one more (about 0.38 GB of RSS each).
@@ -236,8 +241,8 @@ What it costs and what to know:
   `max_open_sessions` on its next access once those reads land.
 - **With `cuda_cubes`, the reading thread synchronizes the device before handing a cube over.**
   The SDK's DLPack export carries no stream, so a device-wide `torch.cuda.synchronize` on the
-  reader thread is what orders the SDK's writes against the model's stream; depth 2 hides its
-  latency. Provisional until the SDK offers an event for its buffers.
+  reader thread is what orders the SDK's writes against the model's stream; the read-ahead
+  hides its latency. Provisional until the SDK offers an event for its buffers.
 - **`num_workers` must be 0**, for the same reason as `read_threads`; the module raises.
 - **`samples_per_frame > 1` disables it for the train loader only** (the repeat wrapper in
   `cuvis-ai-core` forwards neither the batched fetch nor the order); the loader warns.
@@ -246,7 +251,10 @@ What it costs and what to know:
 - **Where the time goes.** On the CuvisNEXT wizard trainrun (RTX 5070 Ti, 1000x1080x61
   Reflectance, batch 1) a training step took 0.24 s, of which the SDK read was about 0.10 s and
   the cube's host round trip 0.06 s; the read-ahead overlaps the first, `cuda_cubes` removes the
-  second. The measured effect is in the changelog entry of the release that shipped it.
+  second. Measured: `read_ahead: 1` brings the step to 0.165 s and the wizard's preset run
+  (`max_epochs: 20`, early stopping on pixel AUROC; both runs stopped after 7 epochs) from
+  631 to 488 s at no extra device memory; with `cuda_cubes` on top the step is 0.128 s. The
+  numbers are in the 0.8.0 changelog entry.
 
 ### SDK processing device (`sdk_cuda`)
 
