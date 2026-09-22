@@ -29,12 +29,14 @@ needed if we want backend enforcement of the anomaly constraint on an npz split.
 `__getitem__`, so torch's fetcher sees no `__getitems__` and falls back to per-index reads on
 the train loader whenever `samples_per_frame > 1`. Val, test and predict are unaffected.
 
-**Why:** `read_threads` only overlaps reads inside one `__getitems__` call; a repeated train
-loader reads single-threaded however many threads are configured.
+**Why:** `read_threads` only overlaps reads inside one `__getitems__` call, and `read_ahead`
+serves its frames from there too; a repeated train loader reads single-threaded and
+synchronously however many threads or frames are configured (the loader warns about it).
 
-**Where to start:** a three-line forward in cuvis-ai-core: `def __getitems__(self, indices):
-return self._base.__getitems__([i % len(self._base) for i in indices])` when the base has one.
-Then drop the "train loader only" caveat from the README here.
+**Where to start:** a forward in cuvis-ai-core: `def __getitems__(self, indices):
+return self._base.__getitems__([i % len(self._base) for i in indices])` when the base has one,
+plus `announce_order(indices)` forwarding the same remapped indices so the read-ahead learns
+the epoch's order. Then drop the "train loader only" caveats from the README here.
 
 **Depends on:** a cuvis-ai-core release; nothing in this repository.
 

@@ -3,6 +3,45 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.8.0 - 2026-09-22
+
+- **Read-ahead at batch 1 (`read_ahead`).** torch hands a map-style dataset one batch of indices
+  at a time and Lightning never prefetches for a sized loader, so at `batch_size: 1` (the
+  CuvisNEXT training wizard's setting) the SDK read of frame i+1 waited for the model step on
+  frame i and `read_threads` bought nothing. With `read_ahead: k` both cu3s DataModules own the
+  loader's batch sampler, learn the epoch's order the moment torch draws it and keep up to k
+  frames of that order in flight on reader threads while the model works on the current one. Off
+  by default. The order is exactly torch's for the same seed (the sampler is a `BatchSampler`
+  that draws lazily, as a plain `shuffle=True` loader does); a consumer that leaves the
+  announced order is served synchronously, so no frame is ever handed out for the wrong index;
+  an iterator dropped mid-epoch (the sanity check, an early stop) releases the frames read ahead
+  of it at once; a reader with reads in flight is never evicted from the cache, which shrinks
+  back to `max_open_sessions` once they land; a failed read, or a recording that fails to open,
+  surfaces at its own frame with the measurement named, and the other frames in flight are
+  dropped inside the handler rather than during exception propagation, where a device cube's
+  DLPack deleter cannot run. A depth of k runs on a pool k threads wide per recording even with
+  `read_threads: 0` (depth 1 opens no extra handle); every frame in flight is a whole cube in
+  host or, with `cuda_cubes`, device memory, so the depth is capped at 8. With `cuda_cubes` the
+  reading thread synchronizes the device before handing a cube over, since the SDK's DLPack
+  export carries no stream. `num_workers` must be 0; not under DDP; `samples_per_frame > 1`
+  leaves the train loader synchronous with a warning; the module also warns when `read_threads`
+  is set at `batch_size` 1 without `read_ahead`. Measured on the CuvisNEXT wizard trainrun (RTX
+  5070 Ti laptop, 1000x1080x61 Reflectance cubes, 96 training and 84 validation frames, batch 1,
+  SDK on the GPU): `read_ahead: 1` takes the training step from 0.24 to 0.165 s and the
+  validation step from 0.41 to 0.32 s, a 3-epoch run from 365 to 297 s (19 percent) and the
+  wizard's preset schedule from 631 to 488 s (23 percent; `max_epochs: 20` with early stopping
+  on pixel AUROC, which stopped both runs after 7 epochs), at the same peak device memory as
+  without it (5365 MiB) and no measurable change in host RSS. Depth 2 takes the training step to
+  0.151 s but the run only 2 percent further, since the validation pass dominates each epoch,
+  and opens four more SDK handles, about 354 MiB of device memory and 1 GB of RSS. With
+  `cuda_cubes` on top the training step is 0.128 s at either depth and the 3-epoch run 22
+  percent shorter than the baseline, at a peak of 5659 MiB.
+
+- **`Cu3sPrefetchReader.submit`** schedules one read on the pool and returns its future, and
+  **`Cu3sReaderCache.submit`** does the same across recordings, pinning the reader against
+  eviction until the future resolves and completing synchronously when the binding holds the
+  GIL and the pool is off. `iter_reads` is unchanged and now built on `submit`.
+
 ## 0.7.0 - 2026-09-17
 
 - **Threaded cu3s reading (`read_threads`).** A batch is read on several `cuvis.SessionFile`

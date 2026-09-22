@@ -265,3 +265,10 @@ def test_reader_threads_rejects_process_workers(tmp_path):
 def test_max_open_sessions_must_be_positive(tmp_path):
     with pytest.raises(ValueError, match="max_open_sessions must be >= 1"):
         MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), max_open_sessions=0)
+
+
+def test_read_ahead_arrives_on_the_multi_module(mock_cuvis_sdk, tmp_path):
+    csv_path = _write_dataset(tmp_path)
+    assert MultiCu3sDataModule(universe_csv=str(csv_path), read_ahead=2).read_ahead == 2
+    with pytest.raises(ValueError, match="read_ahead=2 cannot be combined with num_workers=1"):
+        MultiCu3sDataModule(universe_csv=str(csv_path), read_ahead=2, num_workers=1)

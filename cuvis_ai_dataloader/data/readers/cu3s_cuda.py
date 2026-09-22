@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import torch
 from loguru import logger
 
 _enabled = False
@@ -81,3 +82,15 @@ def read_cube(mesu, *, device: bool) -> tuple[Any, np.ndarray]:
     if device:
         return tensor, wavelengths
     return tensor.cpu().numpy(), wavelengths
+
+
+def sync_device_cube(cube: Any) -> None:
+    """Wait for the device before a cube read on one thread is consumed on another.
+
+    The SDK's DLPack export ignores the stream torch passes it and the SDK exposes no stream
+    or event of its own, so nothing orders the SDK's writes against the consumer's stream. A
+    device-wide synchronize on the producing thread is the one primitive that covers a stream
+    nobody can name; it is provisional until the SDK offers an event. A host cube needs none.
+    """
+    if isinstance(cube, torch.Tensor) and cube.is_cuda:
+        torch.cuda.synchronize(cube.device)

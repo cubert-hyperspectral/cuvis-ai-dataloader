@@ -477,3 +477,137 @@ def test_samples_per_frame_with_coherent_batches_keeps_recordings_together(
     assert sorted(i for batch in batches for i in batch) == list(range(12))
     mixed = [b for b in batches if len({sources[i % len(sources)] for i in b}) > 1]
     assert len(mixed) <= 1, "only the batch straddling the two recordings may mix them"
+
+
+# ------------------------------------------------------------------------------ read-ahead
+@pytest.fixture
+def releases_gil(monkeypatch):
+    """Force the capability probe positive; the fake SDK never releases the GIL."""
+    monkeypatch.setattr(
+        "cuvis_ai_dataloader.data.readers.cu3s_pool.cuvis_releases_gil", lambda _call: True
+    )
+
+
+def _warnings_during(fn):
+    from loguru import logger
+
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        result = fn()
+    finally:
+        logger.remove(sink)
+    return result, messages
+
+
+def test_read_ahead_arrives_through_the_params_shape(mock_cuvis_sdk, tmp_path):
+    dm = Cu3sDataModule(
+        **{
+            "data_module": "cu3s",
+            "splits": {"predict": []},
+            "batch_size": 1,
+            "num_workers": 0,
+            "params": {"cu3s_file_path": _make_cu3s(tmp_path), "read_ahead": 2},
+        }
+    )
+    assert dm.read_ahead == 2
+
+
+def test_read_ahead_rejects_process_workers(tmp_path):
+    with pytest.raises(ValueError, match="read_ahead=2 cannot be combined with num_workers=2"):
+        Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), read_ahead=2, num_workers=2)
+
+
+def test_read_ahead_loader_reads_each_frame_once_in_order(mock_cuvis_sdk, tmp_path, releases_gil):
+    from cuvis_ai_dataloader.data.readers.read_ahead import LookaheadBatchSampler
+
+    dm = Cu3sDataModule(
+        cu3s_file_path=_make_cu3s(tmp_path), measurement_indices=[0, 1, 2, 3, 4], read_ahead=2
+    )
+    dm.setup(stage="predict")
+    loader = dm.predict_dataloader()
+    assert isinstance(loader.batch_sampler, LookaheadBatchSampler)
+    assert [int(b["mesu_index"][0]) for b in loader] == [0, 1, 2, 3, 4]
+    session = mock_cuvis_sdk["session"]
+    reads = [c.args[0] for c in session.get_measurement.call_args_list][1:]  # after the open
+    assert sorted(reads) == [0, 1, 2, 3, 4], "every frame read exactly once, none re-read"
+
+
+def test_read_ahead_keeps_the_shuffled_order_of_a_plain_loader(
+    mock_cuvis_sdk, tmp_path, releases_gil
+):
+    cu3s = _make_cu3s(tmp_path)
+
+    def epoch_order(read_ahead):
+        dm = Cu3sDataModule(
+            cu3s_file_path=cu3s,
+            splits=DataSplitConfig(train=_fi(cu3s, [0, 1, 2, 3, 4, 5]), val=_fi(cu3s, [6])),
+            read_ahead=read_ahead,
+        )
+        dm.setup(stage="fit")
+        loader = dm.train_dataloader()
+        torch.manual_seed(7)
+        return [int(b["mesu_index"][0]) for b in loader]
+
+    plain, ahead = epoch_order(0), epoch_order(2)
+    assert sorted(plain) == [0, 1, 2, 3, 4, 5]
+    assert ahead == plain, "the look-ahead sampler must draw the same permutation as torch"
+
+
+def test_samples_per_frame_keeps_the_train_loader_synchronous_and_says_so(
+    mock_cuvis_sdk, tmp_path, releases_gil
+):
+    from cuvis_ai_dataloader.data.readers.read_ahead import LookaheadBatchSampler
+
+    cu3s = _make_cu3s(tmp_path)
+    dm = Cu3sDataModule(
+        cu3s_file_path=cu3s,
+        splits=DataSplitConfig(train=_fi(cu3s, [0, 1, 2]), val=_fi(cu3s, [6])),
+        samples_per_frame=2,
+        read_ahead=2,
+    )
+    dm.setup(stage="fit")
+    loader, messages = _warnings_during(dm.train_dataloader)
+    assert not isinstance(loader.batch_sampler, LookaheadBatchSampler)
+    assert len(loader.dataset) == 6
+    assert any("samples_per_frame" in m and "read_ahead" in m for m in messages), messages
+
+
+def test_read_ahead_composes_with_source_coherent_batches(mock_cuvis_sdk, tmp_path, releases_gil):
+    from cuvis_ai_dataloader.data.readers.read_ahead import AnnouncingBatchSampler
+
+    folder = _make_cu3s_folder(tmp_path, n=2)
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        frames="measurements",
+        batch_size=2,
+        source_coherent_batches=True,
+        read_ahead=2,
+    )
+    dm.setup(stage="predict")
+    loader = dm.predict_dataloader()
+    assert isinstance(loader.batch_sampler, AnnouncingBatchSampler)
+    batches = [b["stem"] for b in loader]
+    assert sorted(s for b in batches for s in b) == ["scan_00"] * 7 + ["scan_01"] * 7
+    mixed = [b for b in batches if len(set(b)) > 1]
+    assert len(mixed) <= 1, "only the batch straddling the two recordings may mix them"
+
+
+def test_an_abandoned_predict_iterator_leaves_no_frame_in_flight(
+    mock_cuvis_sdk, tmp_path, releases_gil
+):
+    """Lightning's sanity check takes two batches and drops the iterator; the frames read ahead
+    of it must not stay alive until the next epoch."""
+    import gc
+
+    dm = Cu3sDataModule(
+        cu3s_file_path=_make_cu3s(tmp_path), measurement_indices=[0, 1, 2, 3, 4, 5], read_ahead=2
+    )
+    dm.setup(stage="predict")
+    it = iter(dm.predict_dataloader())
+    next(it)
+    next(it)
+    del it
+    gc.collect()
+    plan = dm.predict_ds._plan
+    assert not plan._pending and not plan.active
