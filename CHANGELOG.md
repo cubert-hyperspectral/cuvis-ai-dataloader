@@ -3,7 +3,7 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## 0.8.0 - unreleased
+## 0.8.0 - 2026-09-22
 
 - **Read-ahead at batch 1 (`read_ahead`).** torch hands a map-style dataset one batch of indices
   at a time and Lightning never prefetches for a sized loader, so at `batch_size: 1` (the
