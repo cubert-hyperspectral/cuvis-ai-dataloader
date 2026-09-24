@@ -611,3 +611,124 @@ def test_an_abandoned_predict_iterator_leaves_no_frame_in_flight(
     gc.collect()
     plan = dm.predict_ds._plan
     assert not plan._pending and not plan.active
+
+
+# ---------------------------------------------------- recordings without a labels file
+def _polygon_annotation():
+    """One polygon on category 1: rasterizes to a nonzero block, unlike the fixture's []."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=1, category_id=1, segmentation=[[8, 8, 40, 8, 40, 40, 8, 40]], mask=None
+    )
+
+
+def _labelled_and_label_free_folder(tmp_path):
+    """``a.cu3s`` with a sibling ``a.json`` beside ``b.cu3s`` without one; canonical sources."""
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    (folder / "a.cu3s").write_bytes(b"")
+    (folder / "a.json").write_text("{}")  # COCOData.from_path is mocked, content irrelevant
+    (folder / "b.cu3s").write_bytes(b"")
+    a = (folder / "a.cu3s").resolve().as_posix()
+    b = (folder / "b.cu3s").resolve().as_posix()
+    return folder, a, b
+
+
+def test_recording_without_sidecar_yields_an_all_zero_mask(mock_cuvis_sdk, tmp_path):
+    """No labels file means label-free: every frame reads as normal and carries a zero mask."""
+    dm = Cu3sDataModule(cu3s_file_path=_make_cu3s(tmp_path), batch_size=1)
+    dm.setup(stage="predict")
+    sample = dm._predict_ds[0]
+    assert "mask" in sample
+    assert sample["mask"].shape == mock_cuvis_sdk["hw"]
+    assert sample["mask"].dtype == np.int32
+    assert not sample["mask"].any()
+
+
+@pytest.mark.parametrize("order", ["labelled_first", "label_free_first"])
+def test_labelled_and_label_free_recordings_collate_in_one_batch(mock_cuvis_sdk, tmp_path, order):
+    """One batch holds a frame with labels and a frame without: both rows carry a mask, the
+    labelled one byte for byte what its labels rasterize to, the other all zeros."""
+    from unittest.mock import Mock
+
+    from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+    ann = _polygon_annotation()
+    mock_cuvis_sdk["coco"].annotations.where = Mock(return_value=[ann])
+    folder, a, b = _labelled_and_label_free_folder(tmp_path)
+    selectors = _fi(a, [0]) + _fi(b, [0])
+    if order == "label_free_first":
+        selectors = list(reversed(selectors))
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        frames="measurements",
+        splits=DataSplitConfig(val=selectors),
+        batch_size=2,
+    )
+    dm.setup(stage="validate")
+    batch = next(iter(dm.val_dataloader()))
+    h, w = mock_cuvis_sdk["hw"]
+    assert batch["mask"].shape == (2, h, w)
+    rows = dict(zip(batch["stem"], batch["mask"]))
+    assert set(rows) == {"a", "b"}
+    expected = create_mask(annotations=[ann], image_height=h, image_width=w)
+    assert expected.any(), "the labelled mock must rasterize to a nonzero mask"
+    assert torch.equal(rows["a"], torch.from_numpy(expected))
+    assert not rows["b"].any()
+
+
+def test_setup_warns_once_per_stage_for_recordings_without_a_labels_file(mock_cuvis_sdk, tmp_path):
+    """One WARNING per val/test stage the call built, naming the recordings; never for train
+    or predict, and no memory across calls."""
+    folder, a, b = _labelled_and_label_free_folder(tmp_path)
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        frames="measurements",
+        splits=DataSplitConfig(
+            train=_fi(a, [0, 1, 2]) + _fi(b, [0, 1, 2]),
+            val=_fi(a, [3, 4]) + _fi(b, [3, 4]),
+            test=_fi(b, [5, 6]),
+        ),
+    )
+
+    def label_free_warnings(stage):
+        _, messages = _warnings_during(lambda: dm.setup(stage=stage))
+        return [m for m in messages if "no labels file" in m]
+
+    fit = label_free_warnings("fit")
+    assert len(fit) == 1, fit
+    assert "val: 1 of 2 recordings have no labels file" in fit[0]
+    assert "b.cu3s" in fit[0] and "a.cu3s" not in fit[0] and "train" not in fit[0]
+    assert "label-free" in fit[0] and "normal" in fit[0]
+
+    test = label_free_warnings("test")
+    assert len(test) == 1, test
+    assert "test: 1 of 1 recordings have no labels file" in test[0]
+
+    assert label_free_warnings("predict") == []
+    assert len(label_free_warnings("fit")) == 1  # the stages this call built, again
+
+
+def test_enumerate_tags_a_recording_without_a_labels_file_as_normal(mock_cuvis_sdk, tmp_path):
+    """A label-free frame carries the normal tag, so a tag selector asking for normal frames
+    finds it; the labelled recording reads anomalous here because the mock annotates it."""
+    from unittest.mock import Mock
+
+    mock_cuvis_sdk["coco"].annotations.where = Mock(return_value=[_polygon_annotation()])
+    folder, a, b = _labelled_and_label_free_folder(tmp_path)
+    refs = Cu3sDataModule(data_dir=str(folder), frames="measurements").enumerate(
+        frozenset({"tags", "category_ids"})
+    )
+    label_free = [r for r in refs if r.source == b]
+    assert len(label_free) == 7
+    assert all(r.tags == ["normal"] and r.category_ids == [] for r in label_free)
+    assert all(r.tags == ["anomalous"] for r in refs if r.source == a)
+
+    dm = Cu3sDataModule(
+        data_dir=str(folder),
+        frames="measurements",
+        splits=DataSplitConfig(val=[Selector(kind=SelectorKind.TAG, any_of=["normal"])]),
+    )
+    dm.setup(stage="validate")
+    assert dm._val_ds.sample_sources == [b] * 7

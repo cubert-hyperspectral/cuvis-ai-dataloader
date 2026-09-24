@@ -4,7 +4,7 @@
 ``universe.csv`` vocabulary (``source, index [, materialized_path, split, annotation, format,
 group]``) via :mod:`cuvis_ai_dataloader.data._universe`; each frame is a measurement ``index`` of
 a ``.cu3s`` recording (``materialized_path``, defaulting to ``source``), optionally labeled by a
-per-day COCO ``annotation``.
+per-day COCO ``annotation``; a row without one is label-free (all-zero mask, ``normal`` tag).
 
 Two ways to run:
 
@@ -29,6 +29,7 @@ from cuvis_ai_schemas.training.data import SampleRef
 
 from ._extras import accepts_data_config, parse_cu3s_reader_options
 from ._universe import parse_universe, validate_universe_csv_param
+from .labelers.label_free import label_free_mask, warn_label_free_stages
 from .readers.cu3s_pool import Cu3sReaderCache
 from .readers.cu3s_reader import count_measurements
 from .readers.read_ahead import ReadAheadPlan, build_loader
@@ -107,8 +108,19 @@ class _MultiCu3sDataset(Dataset):
         """The cu3s each sample reads from, positionally, for source-coherent batching."""
         return [rec["materialized_path"] for rec in self._rows]
 
+    @property
+    def sources(self) -> list[str]:
+        """The distinct recordings this dataset reads, sorted."""
+        return sorted({rec["materialized_path"] for rec in self._rows})
+
+    @property
+    def label_free_sources(self) -> list[str]:
+        """The recordings among them without a labels file; their frames carry a zero mask."""
+        return sorted({rec["materialized_path"] for rec in self._rows if not rec["annotation"]})
+
     def _decorate(self, rec: dict, item: dict) -> dict:
-        """Attach the row identity, and its per-day COCO labels when it has an annotation.
+        """Attach the row identity and its mask: the per-day COCO labels when the row has an
+        annotation, all zeros when it has none (label-free, every frame reads as normal).
 
         Labeling stays on the calling thread: CocoLabeler holds the GIL for its whole
         duration and keeps mutable index state, so a pool would add risk and no speed.
@@ -124,6 +136,8 @@ class _MultiCu3sDataset(Dataset):
         ann = rec["annotation"]
         if ann:
             item.update(self._labeler_for(ann).load_for(int(rec["index"]), item))
+        else:
+            item["mask"] = label_free_mask(item["cube"])
         return item
 
     @staticmethod
@@ -266,6 +280,15 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         """Validate that a ``universe_csv`` path is given, ends in ``.csv``, and exists."""
         validate_universe_csv_param(params, "cu3s_multi")
 
+    def setup(self, stage: str | None = None) -> None:
+        """Build the stage datasets, then name the recordings without labels in val and test.
+
+        One WARNING per val/test stage this call built that holds a row with an empty
+        ``annotation``: those frames are label-free and score as normal there.
+        """
+        super().setup(stage)
+        warn_label_free_stages(stage, val=self._val_ds, test=self._test_ds)
+
     # -- module-owned path -----------------------------------------------------
     def build_stage_dataset(self, stage: str) -> Dataset:
         """Module-owned path: map the Lightning stage to the matching CSV ``split`` rows."""
@@ -280,8 +303,11 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         labelers: dict[str, Any] = {}
 
         def attrs(ann: str | None, image_id: int) -> tuple[list[str], list[int]]:
-            if not ann or not (required_attrs & {"tags", "category_ids"}):
+            if not (required_attrs & {"tags", "category_ids"}):
                 return [], []
+            if not ann:
+                # No labels file: label-free, every frame reads as normal.
+                return (["normal"] if "tags" in required_attrs else []), []
             if ann not in labelers:
                 from .labelers.coco_labeler import CocoLabeler
 

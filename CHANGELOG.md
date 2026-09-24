@@ -3,6 +3,27 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.8.1 - 2026-09-24
+
+- **A recording without a labels file is label-free: every frame of it now carries an all-zero
+  mask and the `normal` tag.** Both cu3s DataModules (`cu3s` in folder and single-file mode,
+  `cu3s_multi` for a row with an empty `annotation` column) attached `mask` only when the
+  recording had a sibling `<stem>.json`, so a batch from a recording without one had no `mask`
+  key at all. A pipeline whose metric or loss nodes take that mask as a required `targets`
+  input then died at the first such frame with `missing required input 'targets'`: the
+  CuvisNEXT training wizard hit exactly that once its split designer started placing recordings
+  without labels in val and test, after its threshold calibration had already seen 93 scores
+  against 53 targets. `default_collate` could not have stacked a batch mixing frames with and
+  without the key either. The mask is the value `CocoLabeler.load_for` already returned for an
+  image id a labels file does not annotate (int32 `[H, W]` zeros sized from the cube, a host
+  array even for a device-resident cube), now defined once in `labelers/label_free.py` and
+  used by the labeler too. `enumerate` gives such frames `tags == ["normal"]` when a selector
+  asks for tags (they had none, so a `tag: normal` selector skipped them); `category_ids` stay
+  empty, so the `no_train_anomalous` constraint is unchanged. Stated plainly: an unlabelled
+  anomaly in val or test scores as normal, which is the split designer's documented contract,
+  so each `setup` call logs one WARNING per val or test stage it built that holds such
+  recordings, naming them (`val: 1 of 2 recordings have no labels file (...)`).
+
 ## 0.8.0 - 2026-09-22
 
 - **Read-ahead at batch 1 (`read_ahead`).** torch hands a map-style dataset one batch of indices

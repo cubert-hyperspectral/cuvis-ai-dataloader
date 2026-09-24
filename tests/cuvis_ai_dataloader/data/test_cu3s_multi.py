@@ -272,3 +272,86 @@ def test_read_ahead_arrives_on_the_multi_module(mock_cuvis_sdk, tmp_path):
     assert MultiCu3sDataModule(universe_csv=str(csv_path), read_ahead=2).read_ahead == 2
     with pytest.raises(ValueError, match="read_ahead=2 cannot be combined with num_workers=1"):
         MultiCu3sDataModule(universe_csv=str(csv_path), read_ahead=2, num_workers=1)
+
+
+# ---------------------------------------------------- rows without an annotation
+def _write_mixed_dataset(tmp_path):
+    """One labelled test row beside one whose annotation column is empty, plus a train row."""
+    (tmp_path / "frame_a.cu3s").write_bytes(b"")
+    (tmp_path / "frame_b.cu3s").write_bytes(b"")
+    (tmp_path / "day1.json").write_text("{}")
+    csv_path = tmp_path / "universe.csv"
+    csv_path.write_text(
+        "split,source,annotation,index\n"
+        "test,frame_a.cu3s,day1.json,0\n"
+        "test,frame_b.cu3s,,0\n"
+        "train,frame_a.cu3s,day1.json,1\n"
+    )
+    return csv_path
+
+
+def _polygon_annotation():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=1, category_id=1, segmentation=[[8, 8, 40, 8, 40, 40, 8, 40]], mask=None
+    )
+
+
+def test_row_without_annotation_yields_an_all_zero_mask(mock_cuvis_sdk, tmp_path):
+    """A row with an empty annotation column is label-free: zero mask, and it collates beside
+    a labelled row whose rasterized mask is preserved byte for byte."""
+    from unittest.mock import Mock
+
+    import numpy as np
+    import torch
+
+    from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+    ann = _polygon_annotation()
+    mock_cuvis_sdk["coco"].annotations.where = Mock(return_value=[ann])
+    dm = MultiCu3sDataModule(universe_csv=str(_write_mixed_dataset(tmp_path)), batch_size=2)
+    dm.setup(stage="test")
+    labelled, label_free = dm._test_ds[0], dm._test_ds[1]
+    h, w = mock_cuvis_sdk["hw"]
+    expected = create_mask(annotations=[ann], image_height=h, image_width=w)
+    assert expected.any()
+    assert np.array_equal(labelled["mask"], expected)
+    assert labelled["annotation_json"].endswith("day1.json")
+    assert label_free["mask"].shape == (h, w) and label_free["mask"].dtype == np.int32
+    assert not label_free["mask"].any()
+    assert label_free["annotation_json"] == ""  # the row's value, untouched
+    batch = next(iter(dm.test_dataloader()))
+    assert batch["mask"].shape == (2, h, w)
+    assert torch.equal(batch["mask"][0], torch.from_numpy(expected))
+    assert not batch["mask"][1].any()
+
+
+def test_setup_warns_for_rows_without_annotation_in_val_or_test(mock_cuvis_sdk, tmp_path):
+    """The same per-stage WARNING the single-folder module gives, for CSV-owned splits."""
+    from loguru import logger
+
+    def label_free_warnings(stage):
+        messages: list[str] = []
+        sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+        try:
+            dm.setup(stage=stage)
+        finally:
+            logger.remove(sink)
+        return [m for m in messages if "no labels file" in m]
+
+    dm = MultiCu3sDataModule(universe_csv=str(_write_mixed_dataset(tmp_path)))
+    test = label_free_warnings("test")
+    assert len(test) == 1, test
+    assert "test: 1 of 2 recordings have no labels file" in test[0]
+    assert "frame_b.cu3s" in test[0] and "frame_a.cu3s" not in test[0]
+    assert label_free_warnings("fit") == []  # train has no label-free row, val is empty
+    assert label_free_warnings("predict") == []
+
+
+def test_enumerate_tags_a_row_without_annotation_as_normal(mock_cuvis_sdk, tmp_path):
+    dm = MultiCu3sDataModule(universe_csv=str(_write_mixed_dataset(tmp_path)))
+    refs = dm.enumerate(frozenset({"tags", "category_ids"}))
+    label_free = [r for r in refs if r.source == "frame_b.cu3s"]
+    assert len(label_free) == 1
+    assert label_free[0].tags == ["normal"] and label_free[0].category_ids == []

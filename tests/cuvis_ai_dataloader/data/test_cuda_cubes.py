@@ -145,3 +145,17 @@ def test_a_host_reader_in_a_device_mode_process_still_returns_numpy(
     finally:
         device_reader.close()
         host_reader.close()
+
+
+def test_a_device_cube_still_gets_a_host_zero_mask(mock_cuvis_sdk, cu3s, cuda_capable):
+    """A recording without a labels file hands out a torch cube and a host int32 zero mask
+    sized from that cube's shape."""
+    dm = Cu3sDataModule(cu3s_file_path=cu3s, cuda_cubes=True)
+    dm.setup(stage="predict")
+    item = dm.predict_ds[0]
+    assert isinstance(item["cube"], torch.Tensor)
+    mask = item["mask"]
+    assert isinstance(mask, np.ndarray)
+    assert mask.dtype == np.int32
+    assert mask.shape == tuple(int(s) for s in item["cube"].shape[:2])
+    assert not mask.any()
