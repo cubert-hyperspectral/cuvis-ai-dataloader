@@ -28,6 +28,8 @@ from cuvis_ai_core.data.rle import (
     decode_rle_mask_for_canvas,
 )
 
+from .label_free import label_free_mask
+
 
 class SafeWizard(JSONWizard):
     """
@@ -576,7 +578,11 @@ class CocoLabeler:
         return fb_h, fb_w
 
     def load_for(self, image_id: int, item: dict) -> dict:
-        """Return ``{"mask": int32[H,W]}`` for ``image_id`` (zeros if unannotated)."""
+        """Return ``{"mask": int32[H,W]}`` for ``image_id``.
+
+        An image id the file does not list gets the same all-zero mask a recording without a
+        labels file gets (``label_free_mask``): unannotated means normal in both cases.
+        """
         cube = item["cube"]
         fb_hw = (cube.shape[0], cube.shape[1])
         if image_id in self._coco.image_ids:
@@ -584,5 +590,5 @@ class CocoLabeler:
             json_h, json_w = self._canvas_size(image_id, fb_hw)
             mask = create_mask(annotations=anns, image_height=json_h, image_width=json_w)
         else:
-            mask = np.zeros((int(fb_hw[0]), int(fb_hw[1])), dtype=np.int32)
+            mask = label_free_mask(cube)
         return {"mask": mask}

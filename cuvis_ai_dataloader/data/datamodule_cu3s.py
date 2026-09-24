@@ -1,4 +1,4 @@
-"""cu3s DataModule: ``.cu3s`` cubes via the cuvis SDK + optional COCO masks.
+"""cu3s DataModule: ``.cu3s`` cubes via the cuvis SDK + COCO masks (zeros without labels).
 
 ``DATA_MODULE_NAME = "cu3s"`` (manifest extras ``[cu3s, coco]``). The split/dataloader
 plumbing lives in ``BaseCuvisAIDataModule``; cube reading is the internal
@@ -58,6 +58,7 @@ from ._extras import (
     parse_int_list,
     parse_str_list,
 )
+from .labelers.label_free import label_free_mask, warn_label_free_stages
 from .readers.cu3s_pool import Cu3sReaderCache
 from .readers.cu3s_reader import Cu3sCubeReader, count_measurements
 from .readers.read_ahead import ReadAheadPlan, build_loader
@@ -236,6 +237,16 @@ class _Cu3sRefDataset(Dataset):
         return [ref.source for ref in self._refs]
 
     @property
+    def sources(self) -> list[str]:
+        """The distinct recordings this dataset reads, sorted."""
+        return sorted({ref.source for ref in self._refs})
+
+    @property
+    def label_free_sources(self) -> list[str]:
+        """The recordings among them without a labels file; their frames carry a zero mask."""
+        return sorted({ref.source for ref in self._refs if not ref.annotation})
+
+    @property
     def wavelengths_nm(self) -> np.ndarray:
         """Per-channel wavelengths (nm, int32) read from the first sample's source.
 
@@ -252,7 +263,8 @@ class _Cu3sRefDataset(Dataset):
         return self.wavelengths_nm
 
     def _decorate(self, ref: SampleRef, read_pos: int, item: dict) -> dict:
-        """Attach the ref's identity, and its COCO labels when it has an annotation.
+        """Attach the ref's identity and its mask: the COCO labels when the recording has a
+        labels file, all zeros when it has none (label-free, every frame reads as normal).
 
         Labeling stays on the calling thread: CocoLabeler holds the GIL for its whole
         duration and keeps mutable index state, so a pool would add risk and no speed.
@@ -264,6 +276,8 @@ class _Cu3sRefDataset(Dataset):
         item["mesu_index"] = int(image_id)
         if ref.annotation:
             item.update(self._labeler_for(ref.annotation).load_for(int(image_id), item))
+        else:
+            item["mask"] = label_free_mask(item["cube"])
         return item
 
     @staticmethod
@@ -499,7 +513,9 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
         ``validate`` / ``test`` would silently iterate the whole configured universe, and
         statistical initialization (e.g. MinMax) would ingest anomalous frames with no
         error. ``setup(None)`` builds only the predict dataset (the whole universe), which
-        is the one meaningful split-less stage.
+        is the one meaningful split-less stage. Afterwards one WARNING names the recordings
+        without a labels file in each val/test stage this call built: their frames are
+        label-free and score as normal there.
         """
         if self.splits is None and stage != DataStage.PREDICT:
             if stage is not None:
@@ -513,6 +529,7 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
             self._predict_ds = self.build_stage_dataset("predict")
             return
         super().setup(stage)
+        warn_label_free_stages(stage, val=self._val_ds, test=self._test_ds)
 
     # -- which recordings this module looks at ---------------------------------
     @property
@@ -606,9 +623,15 @@ class Cu3sDataModule(BaseCuvisAIDataModule):
     def _attrs_for(
         self, annotation: str | None, image_id: int, required: frozenset[str]
     ) -> tuple[list[str], list[int]]:
-        """Populate (tags, category_ids) for a ref only when a stage needs them."""
-        if not annotation or not (required & {"tags", "category_ids"}):
+        """Populate (tags, category_ids) for a ref only when a stage needs them.
+
+        A recording without a labels file is label-free: its frames carry the ``normal`` tag
+        and no category ids (see ``labelers.label_free``).
+        """
+        if not (required & {"tags", "category_ids"}):
             return [], []
+        if not annotation:
+            return (["normal"] if "tags" in required else []), []
         labeler = self._enum_labeler_for(annotation)
         cats = labeler.categories_for(image_id)
         tags = (["anomalous"] if cats else ["normal"]) if "tags" in required else []

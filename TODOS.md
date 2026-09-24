@@ -68,3 +68,24 @@ user's first read.
 inside the image and run `python -c "import cuvis; print(cuvis.version())"`.
 
 **Depends on:** nothing.
+
+## `tiff_paired` without a paired PNG still omits the label key
+
+**What:** the TIFF module attaches its label only when the paired PNG exists; a frame
+without one has no label key. That is the asymmetry 0.8.1 removed from both cu3s modules
+(`labelers/label_free.py`: an all-zero mask, the `normal` tag, one WARNING per val/test
+stage), so a frame without a PNG keeps the two failure modes cu3s no longer has: a batch
+mixing frames with and without the key does not collate, and a node with a required
+`targets` port dies at the first frame without one.
+
+**Why not folded into 0.8.1:** the TIFF label modes differ in kind (an RGB label image vs an
+integer class map), so each needs its own zero value and the tests that pin them; the cu3s
+fix had one value to define.
+
+**Where to start:** `cuvis_ai_dataloader/data/datamodule_tiff_paired.py` where the paired PNG
+is looked up (the `test_missing_png_is_unannotated_not_an_error` case in
+`tests/cuvis_ai_dataloader/data/test_tiff_paired.py` documents today's behaviour); add a
+per-mode zero value beside `label_free_mask`, emit it when the PNG is absent, and call
+`warn_label_free_stages` from the module's `setup`.
+
+**Depends on:** nothing.

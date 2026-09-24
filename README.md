@@ -437,7 +437,10 @@ The frozen rules both sides implement:
   splits the server treats the hash as informational (only positional `dir_indices`
   splits are hash-verified); staleness detection is the author's concern.
 - **Annotations** are the sibling `<stem>.json` COCO next to each cu3s (attached
-  automatically); an empty `predict` stage means the whole universe.
+  automatically). A recording without one is label-free: every frame of it carries an
+  all-zero mask and the `normal` tag, and `setup` logs one WARNING per val or test stage
+  that holds such a recording, since its frames score as normal there. An empty
+  `predict` stage means the whole universe.
 - **Training stages require splits.** `cu3s` does not own split semantics: `fit` /
   `validate` / `test` with no `DataConfig.splits` raise instead of silently iterating
   the whole universe (which would contaminate statistical initialization with anomalous
