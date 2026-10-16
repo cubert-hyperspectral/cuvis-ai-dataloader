@@ -30,7 +30,9 @@ dependencies = [
     # Imported directly; also listed in the `cuda` dependency group below so the
     # group-scoped cu128 pin can bind it for local GPU development.
     "torchvision",
-    "pytorch-lightning",
+    # 2.6.5 and older execute module names from a checkpoint's hyperparameters on load
+    # (PYSEC-2026-3967).
+    "pytorch-lightning>=2.6.6",
     "pillow>=12.2.0",
     "loguru>=0.7.3",
 ]

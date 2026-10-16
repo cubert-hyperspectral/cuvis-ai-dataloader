@@ -3,6 +3,17 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.8.2 - 2026-10-16
+
+- **`pytorch-lightning>=2.6.6` is now a declared floor, and the lock moves from 2.6.5 to 2.6.6.**
+  Lightning 2.6.5 and older import and run module names taken from a checkpoint's
+  `_instantiator` hyperparameters when the checkpoint is loaded, past `weights_only=True`
+  (PYSEC-2026-3967), so loading a checkpoint from an untrusted source is code execution. The
+  dependency was unpinned, which left the repo's own lock on the vulnerable version and let a
+  consumer resolve it next to an older cuvis-ai-core. cuvis-ai-core 0.17.3 and cuvis-ai 0.16.2
+  carry the same floor. The relock touches pytorch-lightning only; the cu128 torch pins are
+  unchanged.
+
 ## 0.8.1 - 2026-09-24
 
 - **A recording without a labels file is label-free: every frame of it now carries an all-zero
