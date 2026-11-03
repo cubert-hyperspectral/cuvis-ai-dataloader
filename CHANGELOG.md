@@ -3,6 +3,20 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.9.0 - 2026-11-03
+
+- **`cu3s_multi` takes `crop`: `(top, bottom, left, right)` pixel margins removed from every
+  frame's cube and mask at read time.** These are the npz converter's `crop` margins, so a
+  dataset whose published model trained on a cropped field of view (bedding: 2400 x 4900 frames
+  center-cropped to 1800 x 4300) can be read straight from its recordings instead of converted.
+  The COCO mask is rasterized on the full frame before the crop, so cube and mask stay
+  pixel-aligned, and a device-resident cube (`cuda_cubes`) is cropped the same way. The margins
+  are four non-negative ints or a `"top,bottom,left,right"` string; anything else raises at
+  construction, and margins larger than the frame raise when it is read. `None`, the default,
+  keeps the frame whole.
+- `apply_crop` and `CropMargins` move to `cuvis_ai_dataloader.data._crop`, shared by the
+  converter and the reader; `npz_converter` still exports both names.
+
 ## 0.8.2 - 2026-10-16
 
 - **`pytorch-lightning>=2.6.6` is now a declared floor, and the lock moves from 2.6.5 to 2.6.6.**

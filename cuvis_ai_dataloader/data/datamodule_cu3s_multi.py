@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_schemas.training.data import SampleRef
 
+from ._crop import CropMargins, apply_crop, parse_crop
 from ._extras import accepts_data_config, parse_cu3s_reader_options
 from ._universe import parse_universe, validate_universe_csv_param
 from .labelers.label_free import label_free_mask, warn_label_free_stages
@@ -55,9 +56,11 @@ class _MultiCu3sDataset(Dataset):
         sdk_cuda: bool = True,
         cuda_cubes: bool = False,
         read_ahead: int = 0,
+        crop: CropMargins | None = None,
     ) -> None:
         self._rows = rows
         self._processing_mode = processing_mode
+        self._crop = crop
         self._cache = Cu3sReaderCache(
             processing_mode=processing_mode,
             max_open_sessions=max_open_sessions,
@@ -120,7 +123,8 @@ class _MultiCu3sDataset(Dataset):
 
     def _decorate(self, rec: dict, item: dict) -> dict:
         """Attach the row identity and its mask: the per-day COCO labels when the row has an
-        annotation, all zeros when it has none (label-free, every frame reads as normal).
+        annotation, all zeros when it has none (label-free, every frame reads as normal). With a
+        ``crop``, cube and mask then lose the same margins.
 
         Labeling stays on the calling thread: CocoLabeler holds the GIL for its whole
         duration and keeps mutable index state, so a pool would add risk and no speed.
@@ -138,6 +142,10 @@ class _MultiCu3sDataset(Dataset):
             item.update(self._labeler_for(ann).load_for(int(rec["index"]), item))
         else:
             item["mask"] = label_free_mask(item["cube"])
+        if self._crop is not None:
+            # After the mask is rasterized on the full canvas, so cube and mask stay aligned.
+            item["cube"] = apply_crop(item["cube"], self._crop)
+            item["mask"] = apply_crop(item["mask"], self._crop)
         return item
 
     @staticmethod
@@ -217,6 +225,10 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         # nothing. Each frame in flight is a whole cube in host (or, with cuda_cubes, device)
         # memory. 0 disables; needs num_workers=0; not under DDP (it replaces the sampler).
         read_ahead: Any = 0,
+        # (top, bottom, left, right) pixel margins removed from every frame's cube and mask,
+        # after the mask is rasterized on the full frame: the npz converter's `crop`, applied
+        # at read time. None keeps the frame whole.
+        crop: Any = None,
     ) -> None:
         super().__init__(
             splits=splits,
@@ -242,6 +254,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         self.sdk_cuda = options.sdk_cuda
         self.cuda_cubes = options.cuda_cubes
         self.read_ahead = options.read_ahead
+        self.crop = parse_crop(crop)
         self._universe_csv = Path(universe_csv).resolve()
         self._processing_mode = processing_mode
         self._predict_split = split  # which CSV split predict_dataloader iterates (module-owned)
@@ -393,6 +406,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
             sdk_cuda=self.sdk_cuda,
             cuda_cubes=self.cuda_cubes,
             read_ahead=self.read_ahead,
+            crop=self.crop,
         )
 
     def _validate_read_indices(self, rows: list[dict[str, Any]]) -> None:

@@ -355,3 +355,63 @@ def test_enumerate_tags_a_row_without_annotation_as_normal(mock_cuvis_sdk, tmp_p
     label_free = [r for r in refs if r.source == "frame_b.cu3s"]
     assert len(label_free) == 1
     assert label_free[0].tags == ["normal"] and label_free[0].category_ids == []
+
+
+# ---------------------------------------------------- crop margins
+def test_crop_trims_cube_and_mask_alike(mock_cuvis_sdk, tmp_path):
+    """The mask is rasterized on the full frame, then cube and mask lose the same margins."""
+    from unittest.mock import Mock
+
+    import numpy as np
+
+    from cuvis_ai_dataloader.data.labelers.coco_labeler import create_mask
+
+    ann = _polygon_annotation()
+    mock_cuvis_sdk["coco"].annotations.where = Mock(return_value=[ann])
+    crop = (4, 6, 8, 2)  # top, bottom, left, right
+    dm = MultiCu3sDataModule(
+        universe_csv=str(_write_mixed_dataset(tmp_path)), batch_size=2, crop=list(crop)
+    )
+    assert dm.crop == crop
+    dm.setup(stage="test")
+    h, w = mock_cuvis_sdk["hw"]
+    full_mask = create_mask(annotations=[ann], image_height=h, image_width=w)
+    full_cube = mock_cuvis_sdk["measurement"].cube.array
+    item = dm._test_ds[0]
+    assert item["cube"].shape == (h - 10, w - 10, mock_cuvis_sdk["channels"])
+    assert np.array_equal(item["cube"], full_cube[4 : h - 6, 8 : w - 2])
+    assert np.array_equal(item["mask"], full_mask[4 : h - 6, 8 : w - 2])
+    assert item["mask"].any()
+    label_free = dm._test_ds[1]
+    assert label_free["mask"].shape == (h - 10, w - 10) and not label_free["mask"].any()
+    batch = next(iter(dm.test_dataloader()))
+    assert batch["cube"].shape[1:3] == (h - 10, w - 10)
+    assert batch["mask"].shape == (2, h - 10, w - 10)
+
+
+def test_crop_default_keeps_the_frame_whole(mock_cuvis_sdk, tmp_path):
+    dm = MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), split="all")
+    assert dm.crop is None
+    dm.setup(stage="predict")
+    assert dm._predict_ds[0]["cube"].shape[:2] == mock_cuvis_sdk["hw"]
+
+
+@pytest.mark.parametrize("crop", [(1, 2, 3), (-1, 0, 0, 0), "1,2"])
+def test_crop_rejects_bad_margins(tmp_path, crop):
+    with pytest.raises(ValueError, match="crop must be four non-negative"):
+        MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), crop=crop)
+
+
+def test_crop_accepts_a_cli_string(mock_cuvis_sdk, tmp_path):
+    dm = MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), crop="300, 300, 300, 300")
+    assert dm.crop == (300, 300, 300, 300)
+
+
+def test_crop_larger_than_the_frame_fails_on_read(mock_cuvis_sdk, tmp_path):
+    h, _ = mock_cuvis_sdk["hw"]
+    dm = MultiCu3sDataModule(
+        universe_csv=str(_write_dataset(tmp_path)), split="all", crop=(h // 2, h // 2, 0, 0)
+    )
+    dm.setup(stage="predict")
+    with pytest.raises(ValueError, match="too large for spatial shape"):
+        dm._predict_ds[0]

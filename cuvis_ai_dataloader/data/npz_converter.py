@@ -30,6 +30,8 @@ from typing import Any, NamedTuple
 import numpy as np
 from loguru import logger
 
+from ._crop import CropMargins, apply_crop
+
 
 class SplitManifestOutputs(NamedTuple):
     """The two artifacts :func:`convert_split_manifest` writes.
@@ -64,10 +66,6 @@ def _npz_is_valid(path: Path, *, need_masks: bool) -> bool:
         return False
 
 
-# (top, bottom, left, right) pixel margins removed from the first two axes.
-CropMargins = tuple[int, int, int, int]
-
-
 def derive_masks(category_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Split a per-pixel category-id mask into ``(mask, class_mask)``.
 
@@ -82,22 +80,6 @@ def derive_masks(category_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     class_mask = cat.astype(np.uint8)
     mask = (cat > 0).astype(np.int32)
     return mask, class_mask
-
-
-def apply_crop(arr: np.ndarray, crop: CropMargins | None) -> np.ndarray:
-    """Remove ``(top, bottom, left, right)`` margins from the first two axes. ``None`` -> as-is.
-
-    Applied identically to the cube and the masks so they stay pixel-aligned.
-    """
-    if crop is None:
-        return arr
-    top, bottom, left, right = (int(v) for v in crop)
-    if min(top, bottom, left, right) < 0:
-        raise ValueError(f"crop margins must be non-negative, got {crop}")
-    h, w = int(arr.shape[0]), int(arr.shape[1])
-    if top + bottom >= h or left + right >= w:
-        raise ValueError(f"crop margins {crop} too large for spatial shape {(h, w)}")
-    return arr[top : h - bottom, left : w - right]
 
 
 def convert_cu3s_file(
