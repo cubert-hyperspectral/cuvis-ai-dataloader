@@ -13,9 +13,8 @@ uses semantic versioning.
   pixel-aligned, and a device-resident cube (`cuda_cubes`) is cropped the same way. The margins
   are four non-negative ints or a `"top,bottom,left,right"` string; anything else raises at
   construction, and margins larger than the frame raise when it is read. `None`, the default,
-  keeps the frame whole.
-- `apply_crop` and `CropMargins` move to `cuvis_ai_dataloader.data._crop`, shared by the
-  converter and the reader; `npz_converter` still exports both names.
+  keeps the frame whole. The reader applies the converter's own `apply_crop`, so a cropped cu3s
+  frame and a frame converted with the same `crop` are the same pixels.
 
 ## 0.8.2 - 2026-10-16
 

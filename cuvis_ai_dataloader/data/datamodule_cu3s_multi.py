@@ -27,10 +27,10 @@ from torch.utils.data import DataLoader, Dataset
 from cuvis_ai_core.data.datamodule import BaseCuvisAIDataModule
 from cuvis_ai_schemas.training.data import SampleRef
 
-from ._crop import CropMargins, apply_crop, parse_crop
-from ._extras import accepts_data_config, parse_cu3s_reader_options
+from ._extras import accepts_data_config, parse_crop_margins, parse_cu3s_reader_options
 from ._universe import parse_universe, validate_universe_csv_param
 from .labelers.label_free import label_free_mask, warn_label_free_stages
+from .npz_converter import CropMargins, apply_crop
 from .readers.cu3s_pool import Cu3sReaderCache
 from .readers.cu3s_reader import count_measurements
 from .readers.read_ahead import ReadAheadPlan, build_loader
@@ -254,7 +254,7 @@ class MultiCu3sDataModule(BaseCuvisAIDataModule):
         self.sdk_cuda = options.sdk_cuda
         self.cuda_cubes = options.cuda_cubes
         self.read_ahead = options.read_ahead
-        self.crop = parse_crop(crop)
+        self.crop = parse_crop_margins(crop)
         self._universe_csv = Path(universe_csv).resolve()
         self._processing_mode = processing_mode
         self._predict_split = split  # which CSV split predict_dataloader iterates (module-owned)
