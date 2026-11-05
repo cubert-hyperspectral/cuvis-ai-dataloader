@@ -260,6 +260,29 @@ def parse_str_list(s, *, key: str) -> list[str]:
 MAX_READ_AHEAD = 8
 
 
+def parse_crop_margins(crop: Any) -> tuple[int, int, int, int] | None:
+    """Validate ``crop`` as four non-negative ``(top, bottom, left, right)`` pixel margins.
+
+    Accepts any sequence of four ints, or a ``"top,bottom,left,right"`` string (how a CLI
+    ``--data-arg`` carries it). ``None`` stays ``None``: the frame is kept whole. These are the
+    margins the npz converter's ``crop`` takes; :func:`~.npz_converter.apply_crop` applies them.
+    """
+    if crop is None:
+        return None
+    error = ValueError(
+        f"crop must be four non-negative pixel margins (top, bottom, left, right), got {crop!r}"
+    )
+    parts = crop.split(",") if isinstance(crop, str) else crop
+    try:
+        margins = [float(v) for v in parts]
+    except (TypeError, ValueError):
+        raise error from None
+    if len(margins) != 4 or any(m < 0 or not m.is_integer() for m in margins):
+        raise error
+    top, bottom, left, right = (int(m) for m in margins)
+    return top, bottom, left, right
+
+
 class Cu3sReaderOptions(NamedTuple):
     """The reader-side parameters both cu3s DataModules validate the same way."""
 

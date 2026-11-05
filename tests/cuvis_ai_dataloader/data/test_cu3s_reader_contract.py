@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import PropertyMock
+
 import numpy as np
 import pytest
 
@@ -40,6 +42,32 @@ def test_wavelengths_nm_is_the_open_time_capture_not_a_read(mock_cuvis_sdk, cu3s
         wavelengths = reader.wavelengths_nm
         assert session.get_measurement.call_count == reads_at_open
         assert wavelengths is reader.wavelengths
+    finally:
+        reader.close()
+
+
+def test_fps_is_read_on_first_use_not_at_open(mock_cuvis_sdk, cu3s):
+    """The SDK logs the error it raises for a recording without a frame rate, so probing it at
+    open printed an error per opened recording; the reader now asks once, when a caller does."""
+    session = mock_cuvis_sdk["session"]
+    fps = PropertyMock(return_value=25.0)
+    type(session).fps = fps
+    reader = Cu3sCubeReader(cu3s, processing_mode="Raw")
+    try:
+        assert fps.call_count == 0
+        assert reader.fps == 25.0
+        assert reader.fps == 25.0
+        assert fps.call_count == 1
+    finally:
+        reader.close()
+
+
+def test_fps_is_none_without_a_frame_rate(mock_cuvis_sdk, cu3s):
+    session = mock_cuvis_sdk["session"]
+    type(session).fps = PropertyMock(side_effect=RuntimeError("no fps in header"))
+    reader = Cu3sCubeReader(cu3s, processing_mode="Raw")
+    try:
+        assert reader.fps is None
     finally:
         reader.close()
 

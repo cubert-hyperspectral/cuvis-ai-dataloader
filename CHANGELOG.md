@@ -3,6 +3,24 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.9.0 - 2026-11-05
+
+- **`cu3s_multi` takes `crop`: `(top, bottom, left, right)` pixel margins removed from every
+  frame's cube and mask at read time.** These are the npz converter's `crop` margins, so a
+  dataset whose published model trained on a cropped field of view (bedding: 2400 x 4900 frames
+  center-cropped to 1800 x 4300) can be read straight from its recordings instead of converted.
+  The COCO mask is rasterized on the full frame before the crop, so cube and mask stay
+  pixel-aligned, and a device-resident cube (`cuda_cubes`) is cropped the same way. The margins
+  are four non-negative ints or a `"top,bottom,left,right"` string; anything else raises at
+  construction, and margins larger than the frame raise when it is read. `None`, the default,
+  keeps the frame whole. The reader applies the converter's own `apply_crop`, so a cropped cu3s
+  frame and a frame converted with the same `crop` are the same pixels.
+- The cu3s reader reads a recording's frame rate (`Cu3sCubeReader.fps`) on first use instead of at open.
+  The Cuvis SDK logs every error it raises through the root logger, also one the reader catches, so
+  each open of a recording without a frame rate printed `ERROR:root:SessionFile seems to not have fps
+  in header.` and `NoneType: None`; a 20-epoch training run with 3 open recordings printed 13,070 of
+  those pairs.
+
 ## 0.8.2 - 2026-10-16
 
 - **`pytorch-lightning>=2.6.6` is now a declared floor, and the lock moves from 2.6.5 to 2.6.6.**

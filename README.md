@@ -339,6 +339,27 @@ Cubes per second delivered **onto the GPU**, one 940-frame session, `Raw`, RTX 4
   cubes** copies each cube back to host memory and warns once, since the SDK's switch is
   process-wide and one-way; its callers keep getting numpy.
 
+### Crop margins (`crop`, `cu3s_multi`)
+
+`crop` removes `(top, bottom, left, right)` pixel margins from every frame's cube and mask at
+read time, the same margins the npz converter's `crop` bakes into the files. The COCO mask is
+rasterized on the full frame first, so cube and mask stay pixel-aligned. Off by default.
+
+```yaml
+data:
+  data_module: cu3s_multi
+  params:
+    universe_csv: universe.csv
+    crop: [300, 300, 300, 300]   # a 2400 x 4900 frame becomes 1800 x 4300
+```
+
+- **The margins must leave a frame.** Four non-negative ints (or a `"top,bottom,left,right"`
+  string, how a `--data-arg` carries them); margins that eat the whole height or width raise
+  when the frame is read.
+- **It also crops device-resident cubes** (`cuda_cubes`): the crop only slices.
+- **The SDK still reads and processes the whole frame**, so it saves no read time; it trims what
+  the loader hands on and what the pipeline sees.
+
 ### NPZ (`npz_multi`)
 
 `npz_multi` loads one frame per compressed `.npz`, selected by a `splits.json` over a
