@@ -101,11 +101,11 @@ class Cu3sCubeReader:
         # reader's lifetime (~130 MB VRAM per reader on a 410x410x164 session).
         self.session._pc = self.pc
 
-        self.fps: float | None = None
-        try:
-            self.fps = float(self.session.fps)
-        except Exception:
-            self.fps = None
+        # The frame rate is read on first use (see ``fps``): the SDK logs every error it raises
+        # through the root logger, also one its caller catches, so probing a recording without an
+        # fps header at open printed an error each time a recording opened.
+        self._fps: float | None = None
+        self._fps_probed = False
 
         # Custom references are installed BEFORE the processing mode is applied, so
         # the Reflectance/SpectralRadiance validation can count them.
@@ -256,6 +256,21 @@ class Cu3sCubeReader:
         every call; the wavelengths do not change within a recording.
         """
         return self.wavelengths
+
+    @property
+    def fps(self) -> float | None:
+        """The recording's frame rate from its header, or ``None`` when it has none.
+
+        Read on first use and kept: most recordings carry no frame rate, and the SDK logs the
+        error it raises for one, so the reader only asks when a caller does.
+        """
+        if not self._fps_probed:
+            self._fps_probed = True
+            try:
+                self._fps = float(self.session.fps)
+            except Exception:
+                self._fps = None
+        return self._fps
 
     def read(self, mesu_index: int) -> dict:
         """Return ``{"cube", "mesu_index", "wavelengths"}`` for one measurement.

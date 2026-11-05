@@ -15,6 +15,11 @@ uses semantic versioning.
   construction, and margins larger than the frame raise when it is read. `None`, the default,
   keeps the frame whole. The reader applies the converter's own `apply_crop`, so a cropped cu3s
   frame and a frame converted with the same `crop` are the same pixels.
+- The cu3s reader reads a recording's frame rate (`Cu3sCubeReader.fps`) on first use instead of at open.
+  The Cuvis SDK logs every error it raises through the root logger, also one the reader catches, so
+  each open of a recording without a frame rate printed `ERROR:root:SessionFile seems to not have fps
+  in header.` and `NoneType: None`; a 20-epoch training run with 3 open recordings printed 13,070 of
+  those pairs.
 
 ## 0.8.2 - 2026-10-16
 
