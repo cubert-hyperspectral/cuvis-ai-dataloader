@@ -269,13 +269,18 @@ def parse_crop_margins(crop: Any) -> tuple[int, int, int, int] | None:
     """
     if crop is None:
         return None
+    error = ValueError(
+        f"crop must be four non-negative pixel margins (top, bottom, left, right), got {crop!r}"
+    )
     parts = crop.split(",") if isinstance(crop, str) else crop
-    margins = tuple(int(v) for v in parts)
-    if len(margins) != 4 or min(margins) < 0:
-        raise ValueError(
-            f"crop must be four non-negative pixel margins (top, bottom, left, right), got {crop!r}"
-        )
-    return margins  # type: ignore[return-value]
+    try:
+        margins = [float(v) for v in parts]
+    except (TypeError, ValueError):
+        raise error from None
+    if len(margins) != 4 or any(m < 0 or not m.is_integer() for m in margins):
+        raise error
+    top, bottom, left, right = (int(m) for m in margins)
+    return top, bottom, left, right
 
 
 class Cu3sReaderOptions(NamedTuple):

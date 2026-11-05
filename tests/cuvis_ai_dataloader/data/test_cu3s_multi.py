@@ -396,7 +396,10 @@ def test_crop_default_keeps_the_frame_whole(mock_cuvis_sdk, tmp_path):
     assert dm._predict_ds[0]["cube"].shape[:2] == mock_cuvis_sdk["hw"]
 
 
-@pytest.mark.parametrize("crop", [(1, 2, 3), (-1, 0, 0, 0), "1,2"])
+@pytest.mark.parametrize(
+    "crop",
+    [(1, 2, 3), (-1, 0, 0, 0), "1,2", (300.5, 300, 300, 300), "1.5,2,3,4", 300, "a,b,c,d"],
+)
 def test_crop_rejects_bad_margins(tmp_path, crop):
     with pytest.raises(ValueError, match="crop must be four non-negative"):
         MultiCu3sDataModule(universe_csv=str(_write_dataset(tmp_path)), crop=crop)
