@@ -3,6 +3,13 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
+## 0.9.1 - 2026-11-05
+
+- Python 3.12 and 3.13 are supported: `requires-python` is `>=3.11,<3.14` (was `<3.12`), so pip
+  installs the plugin on Colab, which runs 3.13. CI tests 3.11 and 3.13. The relock changes no
+  package version and leaves the cu128 torch pins as they were.
+- CI syncs with `uv sync --locked`, so a stale `uv.lock` fails the run instead of being re-resolved.
+
 ## 0.9.0 - 2026-11-05
 
 - **`cu3s_multi` takes `crop`: `(top, bottom, left, right)` pixel margins removed from every

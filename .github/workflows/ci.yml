@@ -17,11 +17,18 @@ permissions:
 
 # Unlike the model plugins, this plugin's defining heavy dep is the cuvis SDK
 # (the `cu3s` extra), so every job runs inside the cuvis pyil image where the
-# SDK is present and `uv sync --all-extras` resolves cleanly.
+# SDK is present and `uv sync --locked --all-extras` resolves cleanly.
 jobs:
   test:
-    name: Run tests with coverage
+    name: Run tests with coverage (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of requires-python (>=3.11,<3.14).
+        python-version: ["3.11", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     container:
       image: cubertgmbh/cuvis_pyil:3.6.0-ubuntu24.04
     steps:
@@ -44,10 +51,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Run tests with coverage
         run: |
@@ -59,6 +66,7 @@ jobs:
             -v
 
       - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.11'
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -89,7 +97,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Run mypy
         run: uv run mypy cuvis_ai_dataloader/ || true
@@ -116,7 +124,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Run ruff check
         run: uv run ruff check cuvis_ai_dataloader/
@@ -146,7 +154,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Run pip-audit
         run: uv run pip-audit --strict --desc on || true
@@ -182,7 +190,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Build package
         run: uv build
