@@ -3,7 +3,7 @@
 All notable changes are documented here. The format follows Keep a Changelog and the project
 uses semantic versioning.
 
-## 0.9.0 - 2026-11-03
+## 0.9.0 - 2026-11-05
 
 - **`cu3s_multi` takes `crop`: `(top, bottom, left, right)` pixel margins removed from every
   frame's cube and mask at read time.** These are the npz converter's `crop` margins, so a
